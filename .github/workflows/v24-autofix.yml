@@ -1,9 +1,6 @@
 name: Guide v2.4 one-shot source fix
 
 on:
-  push:
-    branches:
-      - feature/guide-v2
   pull_request:
     branches:
       - main
@@ -14,7 +11,7 @@ permissions:
 
 jobs:
   patch:
-    if: ${{ github.head_ref == 'feature/guide-v2' || github.ref_name == 'feature/guide-v2' }}
+    if: ${{ github.head_ref == 'feature/guide-v2' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -28,32 +25,27 @@ jobs:
           from pathlib import Path
           p = Path('app/src/main/java/com/guide/app/MainActivity.kt')
           s = p.read_text()
-          old = '''        val ringtoneButton = pillButton("রিংটোন: ${ringtoneTitle(selectedRingtone)}", "#34466F") {
-              pickRingtone(selectedRingtone) { uri ->
-                  selectedRingtone = uri
-                  ringtoneButton.text = "রিংটোন: ${ringtoneTitle(uri)}"
-              }
-          }'''
-          new = '''        lateinit var ringtoneButton: Button
-          ringtoneButton = pillButton("রিংটোন: ${ringtoneTitle(selectedRingtone)}", "#34466F") {
-              pickRingtone(selectedRingtone) { uri ->
-                  selectedRingtone = uri
-                  ringtoneButton.text = "রিংটোন: ${ringtoneTitle(uri)}"
-              }
-          }'''
-          if old not in s:
-              raise SystemExit('ringtoneButton pattern not found')
-          s = s.replace(old, new, 1)
-          old2 = '''        return when { hours > 0 -> String.format(Locale.getDefault(), "%dঘ %02দমি %02দসে", hours, minutes, secs).replace("দমি", "মি").replace("দসে", "সে"); minutes > 0 -> String.format(Locale.getDefault(), "%dমি %02দসে", minutes, secs).replace("দসে", "সে"); else -> String.format(Locale.getDefault(), "%dসে", secs) }'''
-          new2 = '''        return when {
-              hours > 0 -> "${hours}ঘ ${minutes.toString().padStart(2, '0')}মি ${secs.toString().padStart(2, '0')}সে"
-              minutes > 0 -> "${minutes}মি ${secs.toString().padStart(2, '0')}সে"
-              else -> "${secs}সে"
-          }'''
-          if old2 not in s:
-              raise SystemExit('remainingText pattern not found')
-          s = s.replace(old2, new2, 1)
-          p.write_text(s)
+          token = 'val ringtoneButton = pillButton'
+          if token not in s:
+              raise SystemExit('ringtoneButton token not found')
+          s = s.replace(token, 'lateinit var ringtoneButton: Button\n        ringtoneButton = pillButton', 1)
+          lines = s.splitlines()
+          replaced = False
+          for i, line in enumerate(lines):
+              if 'return when { hours > 0 -> String.format' in line:
+                  indent = line[:len(line) - len(line.lstrip())]
+                  lines[i:i+1] = [
+                      indent + 'return when {',
+                      indent + '    hours > 0 -> "${hours}ঘ ${minutes.toString().padStart(2, \'0\')}মি ${secs.toString().padStart(2, \'0\')}সে"',
+                      indent + '    minutes > 0 -> "${minutes}মি ${secs.toString().padStart(2, \'0\')}সে"',
+                      indent + '    else -> "${secs}সে"',
+                      indent + '}'
+                  ]
+                  replaced = True
+                  break
+          if not replaced:
+              raise SystemExit('remainingText line not found')
+          p.write_text('\n'.join(lines) + '\n')
           PY
           rm -f .github/workflows/v24-autofix.yml
       - name: Commit source fix
