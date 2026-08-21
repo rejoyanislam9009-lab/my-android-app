@@ -4,13 +4,17 @@ on:
   push:
     branches:
       - feature/guide-v2
+  pull_request:
+    branches:
+      - main
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   patch:
-    if: ${{ !contains(github.event.head_commit.message, '[v24-autofix]') }}
+    if: ${{ github.head_ref == 'feature/guide-v2' || github.ref_name == 'feature/guide-v2' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
