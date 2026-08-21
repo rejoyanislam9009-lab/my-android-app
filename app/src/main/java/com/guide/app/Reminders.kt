@@ -10,14 +10,24 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
 import java.util.Calendar
 
 object ReminderScheduler {
-    private const val CHANNEL_ID = "guide_alarm_v2"
+    private const val ALARM_CHANNEL_ID = "guide_alarm_v3"
+    private const val STATUS_CHANNEL_ID = "guide_alarm_status_v1"
+    private const val STATUS_NOTIFICATION_ID = 73001
+    const val ACTION_STOP_ALARM = "com.guide.app.action.STOP_ALARM"
 
     fun scheduleAll(context: Context, store: GuideStore = GuideStore(context)) {
         store.routines().forEach {
@@ -32,6 +42,7 @@ object ReminderScheduler {
             if (it.enabled) scheduleDaily(context, "alarm:${it.id}", it.title, "Guide alarm", it.hour, it.minute)
             else cancel(context, "alarm:${it.id}")
         }
+        refreshAlarmIndicator(context, store)
     }
 
     fun scheduleDaily(context: Context, key: String, title: String, body: String, hour: Int, minute: Int) {
@@ -43,6 +54,7 @@ object ReminderScheduler {
             if (timeInMillis <= System.currentTimeMillis()) add(Calendar.DAY_OF_YEAR, 1)
         }
         scheduleAt(context, key, title, body, next.timeInMillis, true, hour, minute)
+        refreshIndicatorSoon(context)
     }
 
     fun test(context: Context) {
@@ -70,10 +82,22 @@ object ReminderScheduler {
     ) {
         val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val pending = pendingIntent(context, key, title, body, daily, hour, minute, PendingIntent.FLAG_UPDATE_CURRENT)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarm.canScheduleExactAlarms()) {
-            alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending)
-        } else {
+        val exactAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarm.canScheduleExactAlarms()
+
+        if (key.startsWith("alarm:") && exactAllowed) {
+            val showIntent = PendingIntent.getActivity(
+                context,
+                key.hashCode() xor 0x2A71,
+                Intent(context, LoginActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            alarm.setAlarmClock(AlarmManager.AlarmClockInfo(triggerAt, showIntent), pending)
+        } else if (exactAllowed) {
             alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending)
+        } else {
+            alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending)
         }
     }
 
@@ -89,6 +113,7 @@ object ReminderScheduler {
             alarm.cancel(pending)
             pending.cancel()
         }
+        refreshIndicatorSoon(context)
     }
 
     fun exactAlarmAvailable(context: Context): Boolean {
@@ -120,47 +145,178 @@ object ReminderScheduler {
     fun ensureChannel(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
-        val alarmSound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-        val audio = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ALARM)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build()
-        val channel = NotificationChannel(CHANNEL_ID, "Guide alarms & reminders", NotificationManager.IMPORTANCE_HIGH).apply {
-            description = "Routine, meal and custom alarm notifications"
-            enableVibration(true)
-            vibrationPattern = longArrayOf(0, 500, 250, 500, 250, 700)
-            setSound(alarmSound, audio)
-            lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+
+        if (manager.getNotificationChannel(ALARM_CHANNEL_ID) == null) {
+            val channel = NotificationChannel(ALARM_CHANNEL_ID, "Guide alarms", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Active Guide alarm notifications"
+                enableVibration(false)
+                setSound(null, null)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
+            manager.createNotificationChannel(channel)
         }
-        manager.createNotificationChannel(channel)
+
+        if (manager.getNotificationChannel(STATUS_CHANNEL_ID) == null) {
+            val statusChannel = NotificationChannel(STATUS_CHANNEL_ID, "Guide alarm status", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Shows the next enabled Guide alarm"
+                enableVibration(false)
+                setSound(null, null)
+                setShowBadge(false)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
+            manager.createNotificationChannel(statusChannel)
+        }
     }
 
-    fun channelId(): String = CHANNEL_ID
+    fun refreshAlarmIndicator(context: Context, store: GuideStore = GuideStore(context)) {
+        ensureChannel(context)
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val alarms = store.alarms().filter { it.enabled }
+        if (alarms.isEmpty()) {
+            manager.cancel(STATUS_NOTIFICATION_ID)
+            return
+        }
+
+        val next = alarms.minByOrNull { nextMinutes(it.hour, it.minute) } ?: return
+        val openApp = PendingIntent.getActivity(
+            context,
+            73002,
+            Intent(context, LoginActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val time = LocalTime.of(next.hour, next.minute).format(DateTimeFormatter.ofPattern("hh:mm a"))
+        val notification = NotificationCompat.Builder(context, STATUS_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("Guide alarm set")
+            .setContentText("Next: ${next.title} • $time")
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setContentIntent(openApp)
+            .build()
+        manager.notify(STATUS_NOTIFICATION_ID, notification)
+    }
+
+    private fun refreshIndicatorSoon(context: Context) {
+        val appContext = context.applicationContext
+        Handler(Looper.getMainLooper()).postDelayed({
+            refreshAlarmIndicator(appContext)
+        }, 300L)
+    }
+
+    private fun nextMinutes(hour: Int, minute: Int): Int {
+        val now = Calendar.getInstance()
+        val target = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+            if (timeInMillis <= now.timeInMillis) add(Calendar.DAY_OF_YEAR, 1)
+        }
+        return ((target.timeInMillis - now.timeInMillis) / 60_000L).toInt()
+    }
+
+    fun alarmChannelId(): String = ALARM_CHANNEL_ID
+}
+
+private object AlarmSoundPlayer {
+    private var player: MediaPlayer? = null
+    private var vibrator: Vibrator? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var timeout: Runnable? = null
+
+    @Synchronized
+    fun start(context: Context) {
+        stop()
+        val alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        runCatching {
+            val mediaPlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                setDataSource(context, alarmUri)
+                isLooping = true
+                prepare()
+                start()
+            }
+            player = mediaPlayer
+        }
+
+        runCatching {
+            val v = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 600, 300, 600, 300, 900), 0))
+            vibrator = v
+        }
+
+        val stopTask = Runnable { stop() }
+        timeout = stopTask
+        handler.postDelayed(stopTask, 10 * 60 * 1000L)
+    }
+
+    @Synchronized
+    fun stop() {
+        timeout?.let { handler.removeCallbacks(it) }
+        timeout = null
+        runCatching { player?.stop() }
+        runCatching { player?.release() }
+        player = null
+        runCatching { vibrator?.cancel() }
+        vibrator = null
+    }
 }
 
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         ReminderScheduler.ensureChannel(context)
 
+        val key = intent.getStringExtra("key") ?: "guide_alarm"
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+        if (intent.action == ReminderScheduler.ACTION_STOP_ALARM) {
+            AlarmSoundPlayer.stop()
+            manager.cancel(key.hashCode())
+            ReminderScheduler.refreshAlarmIndicator(context)
+            return
+        }
+
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
 
-        val key = intent.getStringExtra("key") ?: "guide_alarm"
         val title = intent.getStringExtra("title") ?: "Guide reminder"
         val body = intent.getStringExtra("body") ?: "You have something planned now."
-        val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
 
         val openApp = PendingIntent.getActivity(
             context,
             key.hashCode() xor 0x51,
-            Intent(context, LoginActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP },
+            Intent(context, LoginActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(context, ReminderScheduler.channelId())
+        val stopAlarm = PendingIntent.getBroadcast(
+            context,
+            key.hashCode() xor 0x7A31,
+            Intent(context, ReminderReceiver::class.java).apply {
+                action = ReminderScheduler.ACTION_STOP_ALARM
+                putExtra("key", key)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        AlarmSoundPlayer.start(context.applicationContext)
+
+        val notification = NotificationCompat.Builder(context, ReminderScheduler.alarmChannelId())
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle(title)
             .setContentText(body)
@@ -168,14 +324,13 @@ class ReminderReceiver : BroadcastReceiver() {
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setAutoCancel(true)
-            .setSound(sound)
-            .setVibrate(longArrayOf(0, 500, 250, 500, 250, 700))
+            .setOngoing(true)
+            .setAutoCancel(false)
             .setContentIntent(openApp)
             .addAction(android.R.drawable.ic_menu_view, "Open Guide", openApp)
+            .addAction(android.R.drawable.ic_media_pause, "Stop alarm", stopAlarm)
             .build()
 
-        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(key.hashCode(), notification)
 
         if (intent.getBooleanExtra("daily", false)) {
