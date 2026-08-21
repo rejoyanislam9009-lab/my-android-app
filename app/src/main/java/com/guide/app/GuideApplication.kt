@@ -1,24 +1,38 @@
 package com.guide.app
 
+import android.app.Activity
 import android.app.Application
 import android.app.NotificationManager
 import android.content.Context
 import android.database.ContentObserver
 import android.media.AudioManager
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 
-class GuideApplication : Application() {
+class GuideApplication : Application(), Application.ActivityLifecycleCallbacks {
     private lateinit var audio: AudioManager
     private var alarmVolume = -1
     private var musicVolume = -1
     private var ringVolume = -1
     private var notificationVolume = -1
     private var observer: ContentObserver? = null
+    private val syncHandler = Handler(Looper.getMainLooper())
+    private var resumedActivities = 0
+
+    private val periodicSync = object : Runnable {
+        override fun run() {
+            if (resumedActivities > 0) {
+                CloudSyncManager.scheduleUpload(this@GuideApplication)
+                syncHandler.postDelayed(this, 60_000L)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
+        registerActivityLifecycleCallbacks(this)
         audio = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         readVolumes()
         observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
@@ -44,6 +58,24 @@ class GuideApplication : Application() {
         }
         contentResolver.registerContentObserver(Settings.System.CONTENT_URI, true, observer!!)
     }
+
+    override fun onActivityResumed(activity: Activity) {
+        resumedActivities++
+        syncHandler.removeCallbacks(periodicSync)
+        syncHandler.postDelayed(periodicSync, 60_000L)
+    }
+
+    override fun onActivityPaused(activity: Activity) {
+        resumedActivities = (resumedActivities - 1).coerceAtLeast(0)
+        CloudSyncManager.scheduleUpload(this)
+        if (resumedActivities == 0) syncHandler.removeCallbacks(periodicSync)
+    }
+
+    override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
+    override fun onActivityStarted(activity: Activity) = Unit
+    override fun onActivityStopped(activity: Activity) = Unit
+    override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
+    override fun onActivityDestroyed(activity: Activity) = Unit
 
     private fun readVolumes() {
         alarmVolume = safeVolume(AudioManager.STREAM_ALARM)
