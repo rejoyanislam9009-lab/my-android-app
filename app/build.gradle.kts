@@ -6,6 +6,11 @@ plugins {
     id("com.google.gms.google-services")
 }
 
+val betaKeystorePath = System.getenv("GUIDE_BETA_KEYSTORE")
+val betaStorePassword = System.getenv("GUIDE_BETA_STORE_PASSWORD")
+val betaKeyAlias = System.getenv("GUIDE_BETA_KEY_ALIAS")
+val betaKeyPassword = System.getenv("GUIDE_BETA_KEY_PASSWORD")
+
 android {
     namespace = "com.guide.app"
     compileSdk = 35
@@ -14,13 +19,28 @@ android {
         applicationId = "com.guide.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 12
-        versionName = "2.9.0"
+        versionCode = 13
+        versionName = "3.0.0"
+    }
+
+    signingConfigs {
+        if (!betaKeystorePath.isNullOrBlank()) {
+            create("beta") {
+                storeFile = file(betaKeystorePath)
+                storePassword = betaStorePassword
+                keyAlias = betaKeyAlias
+                keyPassword = betaKeyPassword
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfigs.findByName("beta")?.let { signingConfig = it }
+        }
         release {
             isMinifyEnabled = false
+            signingConfigs.findByName("beta")?.let { signingConfig = it }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
