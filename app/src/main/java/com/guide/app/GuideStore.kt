@@ -7,6 +7,7 @@ import org.json.JSONObject
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import javax.crypto.SecretKeyFactory
@@ -57,9 +58,17 @@ data class CourseItem(
     val dueDate: String = ""
 )
 
+data class AttendanceRecord(
+    val date: String,
+    val status: String,
+    val time: String = "",
+    val updatedAt: Long = 0L
+)
+
 class GuideStore(context: Context) {
     private val prefs = context.getSharedPreferences("guide_store", Context.MODE_PRIVATE)
     private val dateFormatter = DateTimeFormatter.ISO_LOCAL_DATE
+    private val timeFormatter = DateTimeFormatter.ofPattern("hh:mm:ss a")
 
     fun hasProfile(): Boolean = prefs.contains("profile_name") && prefs.contains("pin_hash")
     fun profileName(): String = prefs.getString("profile_name", "Guide User") ?: "Guide User"
@@ -181,30 +190,65 @@ class GuideStore(context: Context) {
         putJson("alarms", array)
     }
 
-    fun attendanceFor(date: String = today()): String = attendanceObject().optString(date, "Not marked")
+    fun attendanceFor(date: String = today()): String = attendanceRecord(date).status
 
-    fun setAttendance(status: String, date: String = today()) {
-        val obj = attendanceObject().apply { put(date, status) }
-        prefs.edit().putString("attendance", obj.toString()).apply()
+    fun attendanceRecord(date: String = today()): AttendanceRecord {
+        val details = attendanceDetailsObject().optJSONObject(date)
+        if (details != null) {
+            return AttendanceRecord(
+                date = date,
+                status = details.optString("status", "Not marked"),
+                time = details.optString("time", ""),
+                updatedAt = details.optLong("updatedAt", 0L)
+            )
+        }
+        val legacy = attendanceObject().optString(date, "Not marked")
+        return AttendanceRecord(date = date, status = legacy)
+    }
+
+    fun setAttendance(status: String, date: String = today(), time: String = LocalTime.now().format(timeFormatter)) {
+        val legacy = attendanceObject()
+        val details = attendanceDetailsObject()
+        if (status == "Not marked") {
+            legacy.remove(date)
+            details.remove(date)
+        } else {
+            legacy.put(date, status)
+            details.put(date, JSONObject().apply {
+                put("status", status)
+                put("time", time)
+                put("updatedAt", System.currentTimeMillis())
+            })
+        }
+        prefs.edit()
+            .putString("attendance", legacy.toString())
+            .putString("attendance_details", details.toString())
+            .apply()
     }
 
     fun attendanceSummaryForCurrentMonth(): Map<String, Int> {
         val month = LocalDate.now().toString().substring(0, 7)
         val counts = linkedMapOf("Present" to 0, "Absent" to 0, "Leave" to 0)
-        val obj = attendanceObject()
-        obj.keys().forEach { date ->
-            if (date.startsWith(month)) {
-                val status = obj.optString(date)
-                if (counts.containsKey(status)) counts[status] = (counts[status] ?: 0) + 1
-            }
+        val dates = linkedSetOf<String>()
+        val legacy = attendanceObject()
+        legacy.keys().forEach { dates.add(it) }
+        val details = attendanceDetailsObject()
+        details.keys().forEach { dates.add(it) }
+        dates.filter { it.startsWith(month) }.forEach { date ->
+            val status = attendanceFor(date)
+            if (counts.containsKey(status)) counts[status] = (counts[status] ?: 0) + 1
         }
         return counts
     }
 
-    fun attendanceHistory(days: Int = 14): List<Pair<String, String>> = (0 until days).map { offset ->
+    fun attendanceHistory(days: Int = 14): List<AttendanceRecord> = (0 until days).map { offset ->
         val date = LocalDate.now().minusDays(offset.toLong()).format(dateFormatter)
-        date to attendanceFor(date)
+        attendanceRecord(date)
     }
+
+    fun markedAttendanceHistory(days: Int = 60): List<AttendanceRecord> = attendanceHistory(days)
+        .filter { it.status != "Not marked" }
+        .sortedWith(compareByDescending<AttendanceRecord> { it.date }.thenByDescending { it.updatedAt })
 
     fun moneyRecords(): MutableList<MoneyRecord> {
         val array = jsonArray("money_records")
@@ -325,6 +369,7 @@ class GuideStore(context: Context) {
         put("meals", jsonArray("meals"))
         put("alarms", jsonArray("alarms"))
         put("attendance", attendanceObject())
+        put("attendanceDetails", attendanceDetailsObject())
         put("moneyRecords", jsonArray("money_records"))
         put("courses", jsonArray("courses"))
     }.toString(2)
@@ -340,6 +385,11 @@ class GuideStore(context: Context) {
 
     private fun attendanceObject(): JSONObject {
         val raw = prefs.getString("attendance", "{}") ?: "{}"
+        return runCatching { JSONObject(raw) }.getOrDefault(JSONObject())
+    }
+
+    private fun attendanceDetailsObject(): JSONObject {
+        val raw = prefs.getString("attendance_details", "{}") ?: "{}"
         return runCatching { JSONObject(raw) }.getOrDefault(JSONObject())
     }
 }
