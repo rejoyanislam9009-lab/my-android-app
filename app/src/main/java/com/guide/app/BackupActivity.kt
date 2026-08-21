@@ -17,6 +17,7 @@ import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.google.firebase.auth.FirebaseAuth
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -40,6 +41,7 @@ class BackupActivity : AppCompatActivity() {
                 if (ok) {
                     ReminderScheduler.scheduleAll(this, store)
                     GuideBackupManager.autoBackupIfNeeded(this, store, force = true)
+                    CloudSyncManager.scheduleUpload(this)
                     Toast.makeText(this, "ডাটা রিস্টোর হয়েছে", Toast.LENGTH_LONG).show()
                     render()
                 } else Toast.makeText(this, "সঠিক Guide backup ফাইল নয়", Toast.LENGTH_LONG).show()
@@ -55,6 +57,7 @@ class BackupActivity : AppCompatActivity() {
     }
 
     private fun render() {
+        store = GuideStore(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(24), dp(20), dp(34))
@@ -64,17 +67,60 @@ class BackupActivity : AppCompatActivity() {
         top.addView(button("‹", "#1B294A") { finish() }, LinearLayout.LayoutParams(dp(50), dp(48)))
         val title = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
         title.addView(text("ব্যাকআপ ও রিস্টোর", 25f, Color.WHITE, true))
-        title.addView(text("NEW • আপনার Guide ডাটা নিরাপদ রাখুন", 12f, Color.parseColor("#8D9BC1")))
+        title.addView(text("NEW • Local + Firebase cloud protection", 12f, Color.parseColor("#8D9BC1")))
         top.addView(title)
         root.addView(top)
         root.addView(space(22))
 
+        if (CloudSyncManager.isSignedIn()) {
+            val firebase = card()
+            firebase.addView(text("Firebase Cloud Backup  NEW", 18f, Color.WHITE, true))
+            firebase.addView(text(CloudSyncManager.currentEmail(), 13f, Color.parseColor("#79D1B5"), true).apply { setPadding(0, dp(4), 0, dp(5)) })
+            firebase.addView(text("রুটিন, হাজিরা, হিসাব, alarm, prayer settings ও Guide data এই account-এর UID অনুযায়ী cloud-এ রাখা হবে। PIN/password cloud snapshot-এ রাখা হয় না।", 13f, Color.parseColor("#94A2C7")).apply { setPadding(0, 0, 0, dp(12)) })
+            firebase.addView(button("এখনই ক্লাউড ব্যাকআপ নিন", "#5C4EE0") {
+                CloudSyncManager.uploadNow(this) { _, message -> Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+            })
+            firebase.addView(space(9))
+            firebase.addView(button("ক্লাউড থেকে সর্বশেষ ডাটা রিস্টোর", "#267B68") {
+                AlertDialog.Builder(this)
+                    .setTitle("Cloud restore করবেন?")
+                    .setMessage("এই Firebase account-এর সর্বশেষ Guide backup দিয়ে ফোনের Guide data আপডেট হবে।")
+                    .setPositiveButton("রিস্টোর") { _, _ ->
+                        CloudSyncManager.restoreLatest(this) { ok, message ->
+                            if (ok) {
+                                store = GuideStore(this)
+                                ReminderScheduler.scheduleAll(this, store)
+                                GuideBackupManager.autoBackupIfNeeded(this, store, force = true)
+                            }
+                            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                            render()
+                        }
+                    }.setNegativeButton("বাতিল", null).show()
+            })
+            firebase.addView(space(9))
+            firebase.addView(button("Password reset email পাঠান", "#38527C") {
+                val email = CloudSyncManager.currentEmail()
+                if (email.isBlank()) Toast.makeText(this, "Account email পাওয়া যায়নি", Toast.LENGTH_SHORT).show()
+                else FirebaseAuth.getInstance().sendPasswordResetEmail(email)
+                    .addOnSuccessListener { Toast.makeText(this, "Reset email পাঠানো হয়েছে", Toast.LENGTH_LONG).show() }
+                    .addOnFailureListener { Toast.makeText(this, it.localizedMessage ?: "Reset email পাঠানো যায়নি", Toast.LENGTH_LONG).show() }
+            })
+            root.addView(firebase)
+            root.addView(space(14))
+        } else {
+            val firebase = card()
+            firebase.addView(text("Firebase Cloud Backup  NEW", 18f, Color.WHITE, true))
+            firebase.addView(text("Cloud backup ব্যবহার করতে Email account দিয়ে Guide-এ login করুন।", 13f, Color.parseColor("#94A2C7")))
+            root.addView(firebase)
+            root.addView(space(14))
+        }
+
         val status = GuideBackupManager.status(this)
         val autoCard = card()
-        autoCard.addView(text("অটোমেটিক দৈনিক ব্যাকআপ", 18f, Color.WHITE, true))
-        autoCard.addView(text("অ্যাপ ব্যবহার করলে প্রতিদিনের সর্বশেষ ডাটা ফোনে নিরাপদ backup file হিসেবে রাখা হবে।", 13f, Color.parseColor("#94A2C7")).apply { setPadding(0, dp(6), 0, dp(8)) })
+        autoCard.addView(text("অটোমেটিক লোকাল ব্যাকআপ", 18f, Color.WHITE, true))
+        autoCard.addView(text("অ্যাপ ব্যবহার করলে প্রতিদিনের সর্বশেষ data ফোনেও backup copy হিসেবে রাখা হবে। Firebase login থাকলে app background/foreground চলাকালীন cloud sync-ও automatic হবে।", 13f, Color.parseColor("#94A2C7")).apply { setPadding(0, dp(6), 0, dp(8)) })
         val toggle = CheckBox(this).apply {
-            text = "অটো ব্যাকআপ চালু"
+            text = "লোকাল অটো ব্যাকআপ চালু"
             setTextColor(Color.WHITE)
             isChecked = status.enabled
             setOnCheckedChangeListener { _, checked ->
@@ -84,10 +130,11 @@ class BackupActivity : AppCompatActivity() {
             }
         }
         autoCard.addView(toggle)
-        autoCard.addView(text("শেষ ব্যাকআপ: ${GuideBackupManager.formattedLastBackup(this)}", 12f, Color.parseColor("#7F90BB")))
+        autoCard.addView(text("শেষ লোকাল ব্যাকআপ: ${GuideBackupManager.formattedLastBackup(this)}", 12f, Color.parseColor("#7F90BB")))
         autoCard.addView(text("লোকাল কপি: ${status.count} টি", 12f, Color.parseColor("#7F90BB")).apply { setPadding(0, dp(2), 0, dp(12)) })
-        autoCard.addView(button("এখনই ব্যাকআপ নিন", "#5C4EE0") {
+        autoCard.addView(button("এখনই লোকাল ব্যাকআপ নিন", "#5C4EE0") {
             GuideBackupManager.autoBackupIfNeeded(this, store, force = true)
+            CloudSyncManager.scheduleUpload(this)
             Toast.makeText(this, "ব্যাকআপ আপডেট হয়েছে", Toast.LENGTH_SHORT).show()
             render()
         })
@@ -95,8 +142,8 @@ class BackupActivity : AppCompatActivity() {
         root.addView(space(14))
 
         val manualCard = card()
-        manualCard.addView(text("ম্যানুয়াল ব্যাকআপ", 18f, Color.WHITE, true))
-        manualCard.addView(text("ফাইলটি Downloads, Files বা Google Drive provider-এ সেভ করতে পারবেন।", 13f, Color.parseColor("#94A2C7")).apply { setPadding(0, dp(6), 0, dp(12)) })
+        manualCard.addView(text("ম্যানুয়াল ফাইল ব্যাকআপ", 18f, Color.WHITE, true))
+        manualCard.addView(text("Downloads, Files বা Google Drive provider-এ আলাদা JSON backup file রাখতে পারবেন।", 13f, Color.parseColor("#94A2C7")).apply { setPadding(0, dp(6), 0, dp(12)) })
         manualCard.addView(button("ব্যাকআপ ফাইল সেভ করুন", "#267B68") {
             val name = "Guide-backup-${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmm"))}.json"
             createBackup.launch(name)
@@ -109,10 +156,11 @@ class BackupActivity : AppCompatActivity() {
             manualCard.addView(space(9))
             manualCard.addView(button("সর্বশেষ লোকাল ব্যাকআপ রিস্টোর", "#624A78") {
                 AlertDialog.Builder(this).setTitle("সর্বশেষ ব্যাকআপ রিস্টোর")
-                    .setMessage("সর্বশেষ লোকাল backup copy থেকে ডাটা ফিরিয়ে আনবেন?")
+                    .setMessage("সর্বশেষ লোকাল backup copy থেকে data ফিরিয়ে আনবেন?")
                     .setPositiveButton("রিস্টোর") { _, _ ->
                         if (GuideBackupManager.restoreLatestLocal(this, store)) {
                             ReminderScheduler.scheduleAll(this, store)
+                            CloudSyncManager.scheduleUpload(this)
                             Toast.makeText(this, "রিস্টোর সম্পন্ন", Toast.LENGTH_SHORT).show(); render()
                         }
                     }.setNegativeButton("বাতিল", null).show()
@@ -121,19 +169,13 @@ class BackupActivity : AppCompatActivity() {
         root.addView(manualCard)
         root.addView(space(14))
 
-        val cloud = card()
-        cloud.addView(text("Google/Android backup", 18f, Color.WHITE, true))
-        cloud.addView(text("NEW • ফোনের Android Backup চালু থাকলে Android নিজেও app data আপনার Google account-এর system backup-এ রাখতে পারে। এটি Guide-এর নিজস্ব email/password cloud account নয়।", 13f, Color.parseColor("#94A2C7")).apply { setPadding(0, dp(6), 0, dp(12)) })
-        cloud.addView(button("ফোনের Backup settings খুলুন", "#344B78") {
+        val system = card()
+        system.addView(text("Android system backup", 18f, Color.WHITE, true))
+        system.addView(text("ফোনের Android Backup চালু থাকলে system-level app backup-ও ব্যবহার করতে পারবেন।", 13f, Color.parseColor("#94A2C7")).apply { setPadding(0, dp(6), 0, dp(12)) })
+        system.addView(button("ফোনের Backup settings খুলুন", "#344B78") {
             runCatching { startActivity(Intent(Settings.ACTION_SETTINGS)) }
         })
-        root.addView(cloud)
-        root.addView(space(14))
-
-        val security = card()
-        security.addView(text("Cloud account", 18f, Color.WHITE, true))
-        security.addView(text("ইমেইল/পাসওয়ার্ড, Forgot password email এবং server cloud-sync চালাতে Firebase/Supabase project configuration প্রয়োজন। Config ছাড়া ভুয়া recovery system চালু করা হয়নি।", 13f, Color.parseColor("#94A2C7")))
-        root.addView(security)
+        root.addView(system)
 
         setContentView(ScrollView(this).apply { isFillViewport = true; addView(root) })
     }
