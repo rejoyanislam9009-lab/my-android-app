@@ -21,8 +21,12 @@
             android:name=".AlarmActivity"
             android:exported="false"
             android:excludeFromRecents="true"
+            android:launchMode="singleTask"
             android:showWhenLocked="true"
             android:turnScreenOn="true" />
+
+        <activity android:name=".BackupActivity" android:exported="false" />
+        <activity android:name=".PdfReportsActivity" android:exported="false" />
 
         <activity
             android:name=".MainActivity"
