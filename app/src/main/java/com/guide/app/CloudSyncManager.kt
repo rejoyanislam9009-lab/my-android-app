@@ -48,7 +48,7 @@ object CloudSyncManager {
             "profileName" to GuideStore(context).profileName(),
             SNAPSHOT_FIELD to snapshot,
             "updatedAt" to FieldValue.serverTimestamp(),
-            "appVersion" to "2.6.0"
+            "appVersion" to "3.0.0"
         )
 
         FirebaseFirestore.getInstance().collection(COLLECTION).document(user.uid)
