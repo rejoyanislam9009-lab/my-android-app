@@ -1,0 +1,340 @@
+name: Guide v2.5 one-shot UI patch
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ github.event.pull_request.head.ref == 'feature/guide-v2' && !contains(github.event.pull_request.head.sha, '0000000') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: feature/guide-v2
+          fetch-depth: 0
+      - name: Patch MainActivity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('app/src/main/java/com/guide/app/MainActivity.kt')
+          s = p.read_text()
+
+          def rep(old, new, name, count=1):
+              global s
+              if old not in s:
+                  raise SystemExit(f'pattern not found: {name}')
+              s = s.replace(old, new, count)
+
+          rep('import android.app.AlarmManager\n', 'import android.app.AlarmManager\nimport android.app.NotificationManager\n', 'notification import')
+          rep('import android.location.LocationManager\n', 'import android.location.Location\nimport android.location.LocationListener\nimport android.location.LocationManager\n', 'location imports')
+          rep('import android.os.Bundle\n', 'import android.os.Bundle\nimport android.os.CancellationSignal\n', 'cancellation import')
+          rep('import android.view.Gravity\n', 'import android.view.Gravity\nimport android.view.KeyEvent\n', 'key import')
+
+          rep('    private var clockView: TextView? = null\n', '    private var clockView: TextView? = null\n    private var prayerCountdownView: TextView? = null\n', 'prayer countdown field')
+
+          rep('        ReminderScheduler.scheduleAll(this, store)\n        requestNotificationsIfNeeded()\n', '        ReminderScheduler.scheduleAll(this, store)\n        GuideBackupManager.autoBackupIfNeeded(this, store)\n        requestNotificationsIfNeeded()\n', 'auto backup create')
+          rep('    override fun onResume() {\n        super.onResume()\n        if (::store.isInitialized && store.hasProfile()) render()\n    }', '''    override fun onResume() {
+        super.onResume()
+        if (::store.isInitialized && store.hasProfile()) {
+            GuideBackupManager.autoBackupIfNeeded(this, store)
+            render()
+        }
+    }''', 'auto backup resume')
+
+          rep('    override fun onPause() {\n        super.onPause()\n        handler.removeCallbacksAndMessages(null)\n    }\n', '''    override fun onPause() {
+        super.onPause()
+        handler.removeCallbacksAndMessages(null)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN && event.keyCode in listOf(
+                KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_MUTE
+            ) && ReminderScheduler.stopAnyActiveAlarm(this)
+        ) {
+            Toast.makeText(this, "অ্যালার্ম বন্ধ হয়েছে", Toast.LENGTH_SHORT).show()
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+''', 'foreground volume stop')
+
+          rep('        menu.addView(drawerItem("☪", "নামাজের সময়সূচি", detailPage == "prayer") { navigate("plan", "prayer") })', '        menu.addView(drawerItem("☪", "নামাজের সময়সূচি  NEW", detailPage == "prayer") { navigate("plan", "prayer") })', 'prayer new label')
+          rep('        menu.addView(drawerItem("⚙", "সেটিংস", currentTab == "more" && detailPage == null) { navigate("more") })\n', '''        menu.addView(drawerItem("⚙", "সেটিংস", currentTab == "more" && detailPage == null) { navigate("more") })
+        menu.addView(drawerItem("⇧", "ব্যাকআপ ও রিস্টোর  NEW", false) {
+            closeDrawer(true); startActivity(Intent(this, BackupActivity::class.java))
+        })
+        menu.addView(drawerItem("▤", "PDF রিপোর্ট  NEW", false) {
+            closeDrawer(true); startActivity(Intent(this, PdfReportsActivity::class.java))
+        })
+''', 'sidebar new tools')
+
+          rep('''        root.addView(hero)
+        root.addView(space(18))
+
+        root.addView(sectionTitle("Quick actions"))''', '''        root.addView(hero)
+        root.addView(space(18))
+
+        root.addView(sectionTitle("আজকের নামাজের সময় • NEW"))
+        val dashboardPrayer = store.prayerSettings()
+        if (dashboardPrayer.hasLocation()) {
+            val prayerCard = card("#14243A")
+            val times = PrayerTimeCalculator.calculate(LocalDate.now(), dashboardPrayer.latitude, dashboardPrayer.longitude, ZoneId.systemDefault())
+                .filter { it.key != "Sunrise" }
+            times.forEach { prayer ->
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                row.addView(text(prayer.nameBn, 14f, "#FFFFFF", bold = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+                row.addView(text(prayer.time.format(DateTimeFormatter.ofPattern("hh:mm a")), 14f, "#AFC4EA", bold = true))
+                prayerCard.addView(row)
+                prayerCard.addView(space(7))
+            }
+            prayerCountdownView = text("", 13f, "#73D6B4", bold = true).apply {
+                setPadding(0, dp(8), 0, 0)
+            }
+            prayerCard.addView(prayerCountdownView)
+            prayerCard.setOnClickListener { detailPage = "prayer"; currentTab = "plan"; render() }
+            root.addView(prayerCard)
+            updatePrayerCountdown()
+        } else {
+            root.addView(rowCard("☪", "নামাজের সময়সূচি", "NEW • লোকেশন সেট করলে ৫ ওয়াক্ত ও countdown দেখাবে", "#247B67") {
+                detailPage = "prayer"; currentTab = "plan"; render()
+            })
+        }
+        root.addView(space(18))
+
+        root.addView(sectionTitle("Quick actions"))''', 'dashboard prayer card')
+
+          rep('''        root.addView(sectionTitle("Attendance"))
+        val attendanceCard = card("#182342")
+        attendanceCard.addView(text("Today: ${todayRecord.status}", 18f, "#FFFFFF", bold = true))
+        val savedMeta = if (todayRecord.time.isBlank()) "Tap a button to save today's attendance" else "${friendlyDate(todayRecord.date)} • ${todayRecord.time}"
+        attendanceCard.addView(text(savedMeta, 12f, "#8E9CC5").apply { setPadding(0, dp(4), 0, dp(6)) })
+        attendanceCard.addView(text("Present ${summary["Present"]}  •  Absent ${summary["Absent"]}  •  Leave ${summary["Leave"]}", 13f, "#A2AED0").apply { setPadding(0, dp(3), 0, dp(14)) })
+        val markRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        markRow.addView(smallAction("Present", "#237B64") { markAttendance("Present") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markRow.addView(hSpace(8)); markRow.addView(smallAction("Absent", "#A14E58") { markAttendance("Absent") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markRow.addView(hSpace(8)); markRow.addView(smallAction("Leave", "#9B7331") { markAttendance("Leave") }, LinearLayout.LayoutParams(0, dp(44), 1f))''', '''        root.addView(sectionTitle("হাজিরা"))
+        val attendanceCard = card("#182342")
+        attendanceCard.addView(text("আজ: ${statusBn(todayRecord.status)}", 18f, "#FFFFFF", bold = true))
+        val savedMeta = if (todayRecord.time.isBlank()) "আজকের হাজিরা নির্বাচন করুন" else "${friendlyDate(todayRecord.date)} • ${todayRecord.time}"
+        attendanceCard.addView(text(savedMeta, 12f, "#8E9CC5").apply { setPadding(0, dp(4), 0, dp(6)) })
+        attendanceCard.addView(text("এই মাসে: উপস্থিত ${summary["Present"] ?: 0}  •  অনুপস্থিত ${summary["Absent"] ?: 0}  •  ছুটি ${summary["Leave"] ?: 0}", 13f, "#A2AED0").apply { setPadding(0, dp(3), 0, dp(14)) })
+        val markRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        markRow.addView(smallAction("উপস্থিত", "#237B64") { markAttendance("Present") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markRow.addView(hSpace(8)); markRow.addView(smallAction("অনুপস্থিত", "#A14E58") { markAttendance("Absent") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markRow.addView(hSpace(8)); markRow.addView(smallAction("ছুটি", "#9B7331") { markAttendance("Leave") }, LinearLayout.LayoutParams(0, dp(44), 1f))''', 'track attendance labels')
+
+          rep('''        root.addView(sectionTitle("Data")); root.addView(rowCard("⇧", "Share backup", "Export your Guide data as JSON", "#6C668E") { shareBackup() })
+        root.addView(space(20))''', '''        root.addView(sectionTitle("ডাটা ও রিপোর্ট"))
+        root.addView(rowCard("⇧", "ব্যাকআপ ও রিস্টোর  NEW", "অটো ব্যাকআপ, manual save এবং restore", "#6C668E") { startActivity(Intent(this, BackupActivity::class.java)) })
+        root.addView(space(9))
+        root.addView(rowCard("▤", "PDF রিপোর্ট  NEW", "হাজিরা, হিসাব ও রুটিন PDF", "#5368D8") { startActivity(Intent(this, PdfReportsActivity::class.java)) })
+        root.addView(space(20))''', 'settings data tools')
+
+          rep('''        val soundTitle = text("${if (settings.azanUri.isBlank()) "আজান সাউন্ড নির্বাচন করুন" else ringtoneTitle(settings.azanUri)}", 15f, "#FFFFFF", bold = true)
+        soundCard.addView(soundTitle)
+        soundCard.addView(text("ফোনে থাকা আজান/অডিও রিংটোন থেকে বেছে নিন।", 12f, "#8897BE").apply { setPadding(0, dp(4), 0, dp(10)) })
+        soundCard.addView(pillButton("ফোন থেকে আজান সাউন্ড বাছাই", "#5B4AD6") {
+            pickRingtone(settings.azanUri) { uri ->
+                store.setPrayerAzanUri(uri)
+                ReminderScheduler.scheduleAll(this, store)
+                render()
+            }
+        })''', '''        val soundTitle = text(ringtoneTitle(settings.azanUri), 15f, "#FFFFFF", bold = true)
+        soundCard.addView(soundTitle)
+        soundCard.addView(text("NEW • বিল্ট-ইন alert tone অথবা ফোনে থাকা আজান/অডিও বেছে নিন।", 12f, "#8897BE").apply { setPadding(0, dp(4), 0, dp(10)) })
+        soundCard.addView(pillButton("বিল্ট-ইন আজান অ্যালার্ট বাছাই  NEW", "#247B67") { chooseBuiltInAzan() })
+        soundCard.addView(space(8))
+        soundCard.addView(pillButton("ফোন থেকে আজান সাউন্ড বাছাই", "#5B4AD6") {
+            pickRingtone(settings.azanUri) { uri ->
+                store.setPrayerAzanUri(uri)
+                ReminderScheduler.scheduleAll(this, store)
+                render()
+            }
+        })''', 'built in azan chooser button')
+
+          rep('''        val summary = store.attendanceSummaryForCurrentMonth(); val stats = card("#182342")
+        stats.addView(text("This month", 12f, "#8795BB", bold = true)); stats.addView(text("P ${summary["Present"]}   •   A ${summary["Absent"]}   •   L ${summary["Leave"]}", 22f, "#FFFFFF", bold = true).apply { setPadding(0, dp(5), 0, 0) })
+        root.addView(stats); root.addView(space(16)); root.addView(sectionTitle("Mark today"))
+        val markCard = card("#17213E"); val today = store.attendanceRecord()
+        markCard.addView(text(if (today.status == "Not marked") "Not marked yet" else "${today.status} • ${today.time}", 16f, "#FFFFFF", bold = true)); markCard.addView(text(friendlyDate(store.today()), 12f, "#8694BC").apply { setPadding(0, dp(4), 0, dp(12)) })
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        buttons.addView(smallAction("Present", "#237B64") { markAttendance("Present") }, LinearLayout.LayoutParams(0, dp(44), 1f)); buttons.addView(hSpace(8)); buttons.addView(smallAction("Absent", "#A14E58") { markAttendance("Absent") }, LinearLayout.LayoutParams(0, dp(44), 1f)); buttons.addView(hSpace(8)); buttons.addView(smallAction("Leave", "#9B7331") { markAttendance("Leave") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markCard.addView(buttons); root.addView(markCard); root.addView(space(20)); root.addView(sectionTitle("Saved attendance"))''', '''        val summary = store.attendanceSummaryForCurrentMonth(); val stats = card("#182342")
+        stats.addView(text("এই মাসের হাজিরা", 12f, "#8795BB", bold = true))
+        stats.addView(text("উপস্থিত ${summary["Present"] ?: 0}   •   অনুপস্থিত ${summary["Absent"] ?: 0}   •   ছুটি ${summary["Leave"] ?: 0}", 17f, "#FFFFFF", bold = true).apply { setPadding(0, dp(5), 0, 0) })
+        root.addView(stats); root.addView(space(16)); root.addView(sectionTitle("আজকের হাজিরা"))
+        val markCard = card("#17213E"); val today = store.attendanceRecord()
+        markCard.addView(text(if (today.status == "Not marked") "এখনও নির্বাচন করা হয়নি" else "${statusBn(today.status)} • ${today.time}", 16f, "#FFFFFF", bold = true)); markCard.addView(text(friendlyDate(store.today()), 12f, "#8694BC").apply { setPadding(0, dp(4), 0, dp(12)) })
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        buttons.addView(smallAction("উপস্থিত", "#237B64") { markAttendance("Present") }, LinearLayout.LayoutParams(0, dp(44), 1f)); buttons.addView(hSpace(8)); buttons.addView(smallAction("অনুপস্থিত", "#A14E58") { markAttendance("Absent") }, LinearLayout.LayoutParams(0, dp(44), 1f)); buttons.addView(hSpace(8)); buttons.addView(smallAction("ছুটি", "#9B7331") { markAttendance("Leave") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markCard.addView(buttons); root.addView(markCard); root.addView(space(20)); root.addView(sectionTitle("সেভ করা হাজিরা"))''', 'attendance detail labels')
+
+          rep('''        labels.addView(text(record.status, 15f, "#FFFFFF", bold = true)); labels.addView(text("${friendlyDate(record.date)}${if (record.time.isNotBlank()) " • ${record.time}" else ""}", 12f, "#8C9AC1"))''', '''        labels.addView(text(statusBn(record.status), 15f, "#FFFFFF", bold = true)); labels.addView(text("${friendlyDate(record.date)}${if (record.time.isNotBlank()) " • ${record.time}" else ""}", 12f, "#8C9AC1"))''', 'attendance card status')
+
+          rep('''    private fun ringtoneTitle(uri: String): String {
+        if (uri.isBlank()) return "ফোনের ডিফল্ট অ্যালার্ম"
+        return runCatching { RingtoneManager.getRingtone(this, Uri.parse(uri))?.getTitle(this) ?: "নির্বাচিত রিংটোন" }.getOrDefault("নির্বাচিত রিংটোন")
+    }
+
+    private fun useCurrentPrayerLocation() {
+        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fine && !coarse) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 441)
+            return
+        }
+        val manager = getSystemService(LOCATION_SERVICE) as LocationManager
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)
+        val location = providers.mapNotNull { provider -> runCatching { manager.getLastKnownLocation(provider) }.getOrNull() }.maxByOrNull { it.time }
+        if (location == null) {
+            Toast.makeText(this, "ফোনের Location চালু করে আবার চেষ্টা করুন, অথবা হাতে লিখুন", Toast.LENGTH_LONG).show()
+            return
+        }
+        store.setPrayerLocation(location.latitude, location.longitude)
+        store.setPrayerEnabled(true)
+        ReminderScheduler.scheduleAll(this, store)
+        Toast.makeText(this, "লোকেশন সেভ হয়েছে", Toast.LENGTH_SHORT).show()
+        render()
+    }''', '''    private fun ringtoneTitle(uri: String): String {
+        if (uri.isBlank()) return "ফোনের ডিফল্ট অ্যালার্ম"
+        if (uri == "builtin://azan-soft") return "বিল্ট-ইন আজান অ্যালার্ট ১ • শান্ত"
+        if (uri == "builtin://azan-classic") return "বিল্ট-ইন আজান অ্যালার্ট ২ • জোরালো"
+        return runCatching { RingtoneManager.getRingtone(this, Uri.parse(uri))?.getTitle(this) ?: "নির্বাচিত রিংটোন" }.getOrDefault("নির্বাচিত রিংটোন")
+    }
+
+    private fun chooseBuiltInAzan() {
+        val labels = arrayOf("আজান অ্যালার্ট ১ • শান্ত", "আজান অ্যালার্ট ২ • জোরালো", "ফোনের ডিফল্ট অ্যালার্ম")
+        AlertDialog.Builder(this).setTitle("বিল্ট-ইন আজান অ্যালার্ট")
+            .setItems(labels) { _, which ->
+                store.setPrayerAzanUri(when (which) { 0 -> "builtin://azan-soft"; 1 -> "builtin://azan-classic"; else -> "" })
+                ReminderScheduler.scheduleAll(this, store)
+                render()
+            }.show()
+    }
+
+    private fun useCurrentPrayerLocation() {
+        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fine && !coarse) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 441)
+            return
+        }
+        requestFreshPrayerLocation()
+    }
+
+    private fun requestFreshPrayerLocation() {
+        val manager = getSystemService(LOCATION_SERVICE) as LocationManager
+        val providers = listOf(LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER).filter { provider ->
+            runCatching { manager.isProviderEnabled(provider) }.getOrDefault(false)
+        }
+        if (providers.isEmpty()) {
+            Toast.makeText(this, "Location চালু করুন, তারপর আবার চেষ্টা করুন", Toast.LENGTH_LONG).show()
+            runCatching { startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)) }
+            return
+        }
+        Toast.makeText(this, "বর্তমান লোকেশন নেওয়া হচ্ছে…", Toast.LENGTH_SHORT).show()
+
+        fun saveLocation(location: Location?) {
+            val fallback = location ?: providers.mapNotNull { provider -> runCatching { manager.getLastKnownLocation(provider) }.getOrNull() }.maxByOrNull { it.time }
+            if (fallback == null) {
+                Toast.makeText(this, "লোকেশন পাওয়া যায়নি। কয়েক সেকেন্ড পরে আবার চেষ্টা করুন।", Toast.LENGTH_LONG).show()
+                return
+            }
+            store.setPrayerLocation(fallback.latitude, fallback.longitude)
+            store.setPrayerEnabled(true)
+            ReminderScheduler.scheduleAll(this, store)
+            GuideBackupManager.autoBackupIfNeeded(this, store, force = true)
+            Toast.makeText(this, "বর্তমান লোকেশন অটোমেটিক সেভ হয়েছে", Toast.LENGTH_SHORT).show()
+            render()
+        }
+
+        val provider = providers.first()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching {
+                manager.getCurrentLocation(provider, CancellationSignal(), mainExecutor) { location -> saveLocation(location) }
+            }.onFailure { saveLocation(null) }
+        } else {
+            val listener = object : LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    runCatching { manager.removeUpdates(this) }
+                    saveLocation(location)
+                }
+                override fun onProviderEnabled(provider: String) = Unit
+                override fun onProviderDisabled(provider: String) = Unit
+                @Deprecated("Deprecated in Android")
+                override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+            }
+            runCatching { manager.requestSingleUpdate(provider, listener, Looper.getMainLooper()) }
+                .onFailure { saveLocation(null) }
+            handler.postDelayed({
+                runCatching { manager.removeUpdates(listener) }
+                if (!store.prayerSettings().hasLocation()) saveLocation(null)
+            }, 8_000L)
+        }
+    }''', 'fresh location and builtin tone')
+
+          rep('''    private fun friendlyDate(date: String): String = runCatching { LocalDate.parse(date).format(DateTimeFormatter.ofPattern("EEE, dd MMM yyyy")) }.getOrDefault(date)''', '''    private fun statusBn(status: String): String = when (status) {
+        "Present" -> "উপস্থিত"
+        "Absent" -> "অনুপস্থিত"
+        "Leave" -> "ছুটি"
+        "Not marked" -> "নির্বাচন করা হয়নি"
+        else -> status
+    }
+
+    private fun friendlyDate(date: String): String = runCatching { LocalDate.parse(date).format(DateTimeFormatter.ofPattern("EEE, dd MMM yyyy")) }.getOrDefault(date)''', 'status helper')
+
+          rep('''    private fun startClock() {
+        fun tick() { clockView?.text = LocalTime.now().format(DateTimeFormatter.ofPattern("hh:mm:ss a")); handler.postDelayed({ tick() }, 1000) }
+        tick()
+    }''', '''    private fun startClock() {
+        fun tick() {
+            clockView?.text = LocalTime.now().format(DateTimeFormatter.ofPattern("hh:mm:ss a"))
+            updatePrayerCountdown()
+            handler.postDelayed({ tick() }, 1000)
+        }
+        tick()
+    }
+
+    private fun nextPrayerForDashboard(): Pair<PrayerMoment, LocalDateTime>? {
+        val settings = store.prayerSettings()
+        if (!settings.hasLocation()) return null
+        val now = LocalDateTime.now()
+        repeat(2) { offset ->
+            val date = LocalDate.now().plusDays(offset.toLong())
+            PrayerTimeCalculator.calculate(date, settings.latitude, settings.longitude, ZoneId.systemDefault())
+                .filter { it.key != "Sunrise" }
+                .forEach { prayer ->
+                    val target = LocalDateTime.of(date, prayer.time)
+                    if (target.isAfter(now)) return prayer to target
+                }
+        }
+        return null
+    }
+
+    private fun updatePrayerCountdown() {
+        val next = nextPrayerForDashboard()
+        if (next == null) {
+            prayerCountdownView?.text = "লোকেশন সেট করলে পরবর্তী নামাজের countdown দেখাবে"
+            return
+        }
+        val seconds = Duration.between(LocalDateTime.now(), next.second).seconds.coerceAtLeast(0)
+        val h = seconds / 3600; val m = (seconds % 3600) / 60; val sec = seconds % 60
+        prayerCountdownView?.text = "পরবর্তী ${next.first.nameBn} • ${h}ঘ ${m.toString().padStart(2, '0')}মি ${sec.toString().padStart(2, '0')}সে বাকি"
+    }''', 'prayer countdown helpers')
+
+          p.write_text(s)
+          PY
+          rm -f .github/workflows/v25-main-patch.yml
+      - name: Commit v2.5 UI patch
+        shell: bash
+        run: |
+          git config user.name "guide-build-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -- app/src/main/java/com/guide/app/MainActivity.kt .github/workflows/v25-main-patch.yml
+          git commit -m "feat: finish Guide v2.5 UI and location fixes [v25-patch]"
+          git push origin HEAD:feature/guide-v2
