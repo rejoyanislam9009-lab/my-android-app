@@ -35,6 +35,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -52,6 +53,7 @@ class MainActivity : AppCompatActivity() {
     private var drawerOverlay: View? = null
     private var drawerPanel: LinearLayout? = null
     private var lastBackPressedAt = 0L
+    private val alarmCountdownViews = mutableListOf<Pair<TextView, AlarmItem>>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,15 +85,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun render() {
         handler.removeCallbacksAndMessages(null)
+        alarmCountdownViews.clear()
         setContentView(buildShell())
         if (currentTab == "home" && detailPage == null) startClock()
+        if (detailPage == "alarms") startAlarmCountdowns()
     }
 
     private fun buildShell(): View {
         val frame = FrameLayout(this).apply {
             background = gradient("#080D1A", "#111A35")
         }
-
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = gradient("#080D1A", "#111A35")
@@ -199,26 +202,28 @@ class MainActivity : AppCompatActivity() {
         drawer.addView(drawerSection("OVERVIEW"))
         drawer.addView(drawerItem("⌂", "Dashboard", currentTab == "home" && detailPage == null) { navigate("home") })
         drawer.addView(drawerItem("▤", "Daily planner", currentTab == "plan" && detailPage == null) { navigate("plan") })
-        drawer.addView(space(13))
+        drawer.addView(space(14))
 
         drawer.addView(drawerSection("PLANNING"))
         drawer.addView(drawerItem("✓", "Routines", detailPage == "routines") { navigate("plan", "routines") })
         drawer.addView(drawerItem("🍽", "Meals", detailPage == "meals") { navigate("plan", "meals") })
         drawer.addView(drawerItem("⏰", "Alarms", detailPage == "alarms") { navigate("plan", "alarms") })
         drawer.addView(drawerItem("▤", "Courses", detailPage == "courses") { navigate("plan", "courses") })
-        drawer.addView(space(13))
+        drawer.addView(space(14))
 
         drawer.addView(drawerSection("TRACKING"))
         drawer.addView(drawerItem("◎", "Attendance", detailPage == "attendance") { navigate("track", "attendance") })
         drawer.addView(drawerItem("▣", "Accounts", detailPage == "money") { navigate("track", "money") })
         drawer.addView(drawerItem("◉", "Track overview", currentTab == "track" && detailPage == null) { navigate("track") })
-        drawer.addView(space(13))
+        drawer.addView(space(14))
 
         drawer.addView(drawerSection("ACCOUNT"))
         drawer.addView(drawerItem("⚙", "Settings", currentTab == "more" && detailPage == null) { navigate("more") })
 
         drawer.addView(Space(this), LinearLayout.LayoutParams(1, 0, 1f))
-        val lockCard = card("#1A2444", padding = 14)
+        val lockCard = card("#1A2444", padding = 14).apply {
+            background = roundedStroke("#1A2444", "#70FFFFFF", 1, 16)
+        }
         val lockRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         lockRow.addView(text("⌁", 21f, "#FFB5B9", bold = true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(42), dp(42)))
         val lockLabels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, 0, 0) }
@@ -233,21 +238,24 @@ class MainActivity : AppCompatActivity() {
 
     private fun drawerSection(label: String) = text(label, 10f, "#62729D", bold = true).apply {
         letterSpacing = 0.12f
-        setPadding(dp(8), dp(2), 0, dp(6))
+        setPadding(dp(8), dp(4), 0, dp(7))
     }
 
     private fun drawerItem(icon: String, label: String, active: Boolean, action: () -> Unit): LinearLayout {
-        val row = LinearLayout(this).apply {
+        return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            background = if (active) rounded("#26335B", 14) else rounded("#121C38", 14)
+            setPadding(dp(11), dp(9), dp(11), dp(9))
+            background = roundedStroke(if (active) "#26335B" else "#121C38", "#72FFFFFF", 1, 15)
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(5)
+                bottomMargin = dp(5)
+            }
             setOnClickListener { action() }
+            addView(text(icon, 18f, if (active) "#C6BCFF" else "#9CA9CF", bold = true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(38), dp(38)))
+            addView(text(label, 14f, if (active) "#FFFFFF" else "#C5CDEA", bold = active).apply { setPadding(dp(8), 0, 0, 0) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (active) addView(text("•", 18f, "#8D79FF", bold = true))
         }
-        row.addView(text(icon, 18f, if (active) "#C6BCFF" else "#8E9BC4", bold = true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(38), dp(38)))
-        row.addView(text(label, 14f, if (active) "#FFFFFF" else "#B4BFDF", bold = active).apply { setPadding(dp(8), 0, 0, 0) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        if (active) row.addView(text("•", 18f, "#8D79FF", bold = true))
-        return row
     }
 
     private fun openDrawer() {
@@ -305,9 +313,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val now = System.currentTimeMillis()
-        if (now - lastBackPressedAt <= 1800L) {
-            finish()
-        } else {
+        if (now - lastBackPressedAt <= 1800L) finish()
+        else {
             lastBackPressedAt = now
             Toast.makeText(this, "Press back again to exit Guide", Toast.LENGTH_SHORT).show()
         }
@@ -373,16 +380,11 @@ class MainActivity : AppCompatActivity() {
         root.addView(space(18))
 
         root.addView(sectionTitle("Today's routines"))
-        if (routines.isEmpty()) {
-            root.addView(emptyCard("No routines yet", "Add your first routine from Plan."))
-        } else {
-            routines.sortedWith(compareBy<RoutineItem> { it.hour }.thenBy { it.minute }).take(3).forEachIndexed { index, item ->
-                val doneNow = item.doneDate == today
-                root.addView(itemCard(if (doneNow) "✓" else "○", item.title, "${timeText(item.hour, item.minute)} • ${item.category}", if (doneNow) "#1B6D58" else "#3D4C7D") {
-                    toggleRoutine(item)
-                })
-                if (index < minOf(2, routines.size - 1)) root.addView(space(9))
-            }
+        if (routines.isEmpty()) root.addView(emptyCard("No routines yet", "Add your first routine from Plan."))
+        else routines.sortedWith(compareBy<RoutineItem> { it.hour }.thenBy { it.minute }).take(3).forEachIndexed { index, item ->
+            val doneNow = item.doneDate == today
+            root.addView(itemCard(if (doneNow) "✓" else "○", item.title, "${timeText(item.hour, item.minute)} • ${item.category}", if (doneNow) "#1B6D58" else "#3D4C7D") { toggleRoutine(item) })
+            if (index < minOf(2, routines.size - 1)) root.addView(space(9))
         }
         root.addView(space(18))
 
@@ -398,7 +400,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(sectionTitle("Focus note"))
         val note = uiPrefs.getString("focus_${store.today()}", "") ?: ""
         val noteCard = card("#151F3B")
-        noteCard.addView(text(if (note.isBlank()) "Tap to set your main focus for today." else "“$note”", 15f, if (note.isBlank()) "#8795BF" else "#FFFFFF"))
+        noteCard.addView(text(if (note.isBlank()) "Tap to set your main focus for today." else "“$note”", 15f, if (note.isBlank()) "#8795C1" else "#FFFFFF"))
         noteCard.setOnClickListener { editFocusNote(note) }
         root.addView(noteCard)
         return root
@@ -411,7 +413,6 @@ class MainActivity : AppCompatActivity() {
         val meals = store.meals()
         val alarms = store.alarms()
         val courses = store.courses()
-
         root.addView(sectionTitle("Planning tools"))
         root.addView(rowCard("✓", "Routines", "${routines.size} routines • ${routines.count { it.alarmEnabled }} reminders on", "#6759F5") { detailPage = "routines"; render() })
         root.addView(space(10))
@@ -421,7 +422,6 @@ class MainActivity : AppCompatActivity() {
         root.addView(space(10))
         root.addView(rowCard("▤", "Courses", "${courses.size} active learning plans", "#BA7A33") { detailPage = "courses"; render() })
         root.addView(space(22))
-
         root.addView(sectionTitle("Today's schedule"))
         val schedule = mutableListOf<Triple<Int, Int, String>>()
         routines.forEach { schedule += Triple(it.hour, it.minute, "Routine • ${it.title}") }
@@ -438,22 +438,23 @@ class MainActivity : AppCompatActivity() {
     private fun buildTrackPage(): LinearLayout {
         val root = page()
         pageHeader(root, "Track", "Attendance, money and daily consistency.")
-
         val summary = store.attendanceSummaryForCurrentMonth()
+        val todayRecord = store.attendanceRecord()
         root.addView(sectionTitle("Attendance"))
         val attendanceCard = card("#182342")
-        attendanceCard.addView(text("Today: ${store.attendanceFor()}", 18f, "#FFFFFF", bold = true))
-        attendanceCard.addView(text("Present ${summary["Present"]}  •  Absent ${summary["Absent"]}  •  Leave ${summary["Leave"]}", 13f, "#93A0C8").apply { setPadding(0, dp(5), 0, dp(14)) })
+        attendanceCard.addView(text("Today: ${todayRecord.status}", 18f, "#FFFFFF", bold = true))
+        val savedMeta = if (todayRecord.time.isBlank()) "Tap a button to save today's attendance" else "${friendlyDate(todayRecord.date)} • ${todayRecord.time}"
+        attendanceCard.addView(text(savedMeta, 12f, "#8E9CC5").apply { setPadding(0, dp(4), 0, dp(6)) })
+        attendanceCard.addView(text("Present ${summary["Present"]}  •  Absent ${summary["Absent"]}  •  Leave ${summary["Leave"]}", 13f, "#A2AED0").apply { setPadding(0, dp(3), 0, dp(14)) })
         val markRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        markRow.addView(smallAction("Present", "#237B64") { store.setAttendance("Present"); render() }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markRow.addView(smallAction("Present", "#237B64") { markAttendance("Present") }, LinearLayout.LayoutParams(0, dp(44), 1f))
         markRow.addView(hSpace(8))
-        markRow.addView(smallAction("Absent", "#A14E58") { store.setAttendance("Absent"); render() }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markRow.addView(smallAction("Absent", "#A14E58") { markAttendance("Absent") }, LinearLayout.LayoutParams(0, dp(44), 1f))
         markRow.addView(hSpace(8))
-        markRow.addView(smallAction("Leave", "#9B7331") { store.setAttendance("Leave"); render() }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markRow.addView(smallAction("Leave", "#9B7331") { markAttendance("Leave") }, LinearLayout.LayoutParams(0, dp(44), 1f))
         attendanceCard.addView(markRow)
-        attendanceCard.setOnLongClickListener { detailPage = "attendance"; render(); true }
+        attendanceCard.setOnClickListener { detailPage = "attendance"; render() }
         root.addView(attendanceCard)
-        root.addView(text("Long-press attendance card for history", 11f, "#69789F").apply { setPadding(dp(4), dp(7), 0, 0) })
         root.addView(space(20))
 
         val money = store.currentMonthMoneySummary()
@@ -469,11 +470,12 @@ class MainActivity : AppCompatActivity() {
         root.addView(waterCard())
         root.addView(space(20))
 
-        root.addView(sectionTitle("Recent attendance"))
-        store.attendanceHistory(7).forEachIndexed { i, pair ->
-            val date = runCatching { LocalDate.parse(pair.first).format(DateTimeFormatter.ofPattern("EEE, dd MMM")) }.getOrDefault(pair.first)
-            root.addView(simpleLine(date, pair.second))
-            if (i < 6) root.addView(space(8))
+        root.addView(sectionTitle("Saved attendance"))
+        val recent = store.markedAttendanceHistory(30).take(7)
+        if (recent.isEmpty()) root.addView(emptyCard("No attendance saved", "Press Present, Absent or Leave to create your first record."))
+        else recent.forEachIndexed { i, record ->
+            root.addView(attendanceRecordCard(record) { detailPage = "attendance"; render() })
+            if (i < recent.lastIndex) root.addView(space(8))
         }
         return root
     }
@@ -481,7 +483,6 @@ class MainActivity : AppCompatActivity() {
     private fun buildMorePage(): LinearLayout {
         val root = page()
         pageHeader(root, "Settings", "Profile, reminder settings and backup.")
-
         root.addView(sectionTitle("Reminder system"))
         val exact = ReminderScheduler.exactAlarmAvailable(this)
         val notificationOk = Build.VERSION.SDK_INT < 33 || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -494,7 +495,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Test alarm scheduled", Toast.LENGTH_SHORT).show()
         })
         root.addView(space(20))
-
         root.addView(sectionTitle("Profile"))
         root.addView(rowCard("◎", "Profile name", store.profileName(), "#6C5EF4") { changeName() })
         root.addView(space(9))
@@ -502,12 +502,10 @@ class MainActivity : AppCompatActivity() {
         root.addView(space(9))
         root.addView(rowCard("¤", "Currency", currency(), "#2F826E") { changeCurrency() })
         root.addView(space(20))
-
         root.addView(sectionTitle("Data"))
         root.addView(rowCard("⇧", "Share backup", "Export your Guide data as JSON", "#6C668E") { shareBackup() })
         root.addView(space(20))
-
-        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "2.1"
+        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "2.2"
         root.addView(text("GUIDE • Version $version", 11f, "#5F6D95", bold = true).apply { gravity = Gravity.CENTER; letterSpacing = 0.1f })
         return root
     }
@@ -562,12 +560,12 @@ class MainActivity : AppCompatActivity() {
 
     private fun alarmsPage(): LinearLayout {
         val root = page()
-        detailHeader(root, "Alarms", "Uses your phone's default alarm sound.", "+ Add") { addAlarm() }
+        detailHeader(root, "Alarms", "Live countdown to your next alarm.", "+ Add") { addAlarm() }
         val items = store.alarms().sortedWith(compareBy<AlarmItem> { it.hour }.thenBy { it.minute })
         if (items.isEmpty()) root.addView(emptyCard("No custom alarms", "Add a wake-up, work, study or personal alarm."))
         items.forEachIndexed { i, item ->
-            root.addView(itemCard(if (item.enabled) "⏰" else "○", item.title, "${timeText(item.hour, item.minute)} • ${if (item.enabled) "Active" else "Off"}", if (item.enabled) "#286F9C" else "#3B465F") { alarmActions(item) })
-            if (i < items.lastIndex) root.addView(space(9))
+            root.addView(alarmCard(item) { alarmActions(item) })
+            if (i < items.lastIndex) root.addView(space(10))
         }
         root.addView(space(18))
         root.addView(settingCard("Test your alarm sound", "A test alert will fire in about 10 seconds", "#6E7CFF") {
@@ -637,57 +635,62 @@ class MainActivity : AppCompatActivity() {
 
     private fun attendancePage(): LinearLayout {
         val root = page()
-        detailHeader(root, "Attendance", "Daily attendance history")
+        detailHeader(root, "Attendance", "Date and exact save time are recorded automatically.")
         val summary = store.attendanceSummaryForCurrentMonth()
         val stats = card("#182342")
         stats.addView(text("This month", 12f, "#8795BB", bold = true))
         stats.addView(text("P ${summary["Present"]}   •   A ${summary["Absent"]}   •   L ${summary["Leave"]}", 22f, "#FFFFFF", bold = true).apply { setPadding(0, dp(5), 0, 0) })
         root.addView(stats)
-        root.addView(space(18))
-        store.attendanceHistory(31).forEachIndexed { i, pair ->
-            val date = runCatching { LocalDate.parse(pair.first).format(DateTimeFormatter.ofPattern("EEE, dd MMM")) }.getOrDefault(pair.first)
-            val c = simpleLine(date, pair.second)
-            c.setOnClickListener { editAttendanceDate(pair.first, pair.second) }
-            root.addView(c)
-            if (i < 30) root.addView(space(7))
+        root.addView(space(16))
+
+        root.addView(sectionTitle("Mark today"))
+        val markCard = card("#17213E")
+        val today = store.attendanceRecord()
+        markCard.addView(text(if (today.status == "Not marked") "Not marked yet" else "${today.status} • ${today.time}", 16f, "#FFFFFF", bold = true))
+        markCard.addView(text(friendlyDate(store.today()), 12f, "#8694BC").apply { setPadding(0, dp(4), 0, dp(12)) })
+        val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        buttons.addView(smallAction("Present", "#237B64") { markAttendance("Present") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        buttons.addView(hSpace(8))
+        buttons.addView(smallAction("Absent", "#A14E58") { markAttendance("Absent") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        buttons.addView(hSpace(8))
+        buttons.addView(smallAction("Leave", "#9B7331") { markAttendance("Leave") }, LinearLayout.LayoutParams(0, dp(44), 1f))
+        markCard.addView(buttons)
+        root.addView(markCard)
+        root.addView(space(20))
+
+        root.addView(sectionTitle("Saved attendance"))
+        val records = store.markedAttendanceHistory(90).take(60)
+        if (records.isEmpty()) root.addView(emptyCard("No saved records", "Your attendance history will appear here with date and time."))
+        else records.forEachIndexed { i, record ->
+            root.addView(attendanceRecordCard(record) { editAttendanceDate(record.date, record.status) })
+            if (i < records.lastIndex) root.addView(space(8))
         }
         return root
     }
 
     private fun routineActions(item: RoutineItem) {
         val done = item.doneDate == store.today()
-        AlertDialog.Builder(this)
-            .setTitle(item.title)
+        AlertDialog.Builder(this).setTitle(item.title)
             .setItems(arrayOf(if (done) "Mark not done" else "Mark done", "Edit routine", if (item.alarmEnabled) "Turn alarm off" else "Turn alarm on", "Delete")) { _, which ->
-                val items = store.routines()
-                val index = items.indexOfFirst { it.id == item.id }
-                if (index < 0) return@setItems
+                val items = store.routines(); val index = items.indexOfFirst { it.id == item.id }; if (index < 0) return@setItems
                 when (which) {
                     0 -> items[index] = item.copy(doneDate = if (done) "" else store.today())
                     1 -> { addRoutine(item); return@setItems }
                     2 -> {
-                        val updated = item.copy(alarmEnabled = !item.alarmEnabled)
-                        items[index] = updated
+                        val updated = item.copy(alarmEnabled = !item.alarmEnabled); items[index] = updated
                         if (updated.alarmEnabled) ReminderScheduler.scheduleDaily(this, "routine:${updated.id}", updated.title, "Routine • ${updated.category}", updated.hour, updated.minute)
                         else ReminderScheduler.cancel(this, "routine:${updated.id}")
                     }
-                    3 -> {
-                        ReminderScheduler.cancel(this, "routine:${item.id}")
-                        items.removeAt(index)
-                    }
+                    3 -> { ReminderScheduler.cancel(this, "routine:${item.id}"); items.removeAt(index) }
                 }
                 store.saveRoutines(items); render()
             }.show()
     }
 
     private fun toggleRoutine(item: RoutineItem) {
-        val items = store.routines()
-        val index = items.indexOfFirst { it.id == item.id }
-        if (index < 0) return
-        val done = item.doneDate == store.today()
-        items[index] = item.copy(doneDate = if (done) "" else store.today())
-        store.saveRoutines(items)
-        render()
+        val items = store.routines(); val index = items.indexOfFirst { it.id == item.id }; if (index < 0) return
+        val done = item.doneDate == store.today(); items[index] = item.copy(doneDate = if (done) "" else store.today())
+        store.saveRoutines(items); render()
     }
 
     private fun addRoutine(existing: RoutineItem? = null) {
@@ -699,14 +702,10 @@ class MainActivity : AppCompatActivity() {
         box.addView(titleInput); box.addView(space(8)); box.addView(categoryInput); box.addView(picker); box.addView(alarmCheck)
         AlertDialog.Builder(this).setTitle(if (existing == null) "New routine" else "Edit routine").setView(box)
             .setPositiveButton("Save") { _, _ ->
-                val name = titleInput.text.toString().trim()
-                if (name.isBlank()) return@setPositiveButton
+                val name = titleInput.text.toString().trim(); if (name.isBlank()) return@setPositiveButton
                 val updated = RoutineItem(existing?.id ?: java.util.UUID.randomUUID().toString(), name, picker.hour, picker.minute, categoryInput.text.toString().trim().ifBlank { "Routine" }, existing?.doneDate ?: "", alarmCheck.isChecked)
-                val items = store.routines()
-                val index = items.indexOfFirst { it.id == updated.id }
-                if (index >= 0) items[index] = updated else items.add(updated)
-                store.saveRoutines(items)
-                ReminderScheduler.cancel(this, "routine:${updated.id}")
+                val items = store.routines(); val index = items.indexOfFirst { it.id == updated.id }; if (index >= 0) items[index] = updated else items.add(updated)
+                store.saveRoutines(items); ReminderScheduler.cancel(this, "routine:${updated.id}")
                 if (updated.alarmEnabled) ReminderScheduler.scheduleDaily(this, "routine:${updated.id}", updated.title, "Routine • ${updated.category}", updated.hour, updated.minute)
                 render()
             }.setNegativeButton("Cancel", null).show()
@@ -770,9 +769,31 @@ class MainActivity : AppCompatActivity() {
         val box = formBox()
         val titleInput = input("Alarm label").apply { setText(existing?.title ?: "") }
         val picker = TimePicker(this).apply { setIs24HourView(false); hour = existing?.hour ?: 7; minute = existing?.minute ?: 0 }
+        val countdown = text("", 14f, "#BFC9EA", bold = true).apply {
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(11), dp(12), dp(11))
+            background = roundedStroke("#151F3A", "#66FFFFFF", 1, 13)
+        }
         val enabledCheck = CheckBox(this).apply { text = "Alarm enabled"; setTextColor(Color.WHITE); isChecked = existing?.enabled ?: true }
-        box.addView(titleInput); box.addView(picker); box.addView(enabledCheck)
-        AlertDialog.Builder(this).setTitle(if (existing == null) "New alarm" else "Edit alarm").setView(box)
+        box.addView(titleInput)
+        box.addView(space(8))
+        box.addView(picker)
+        box.addView(space(8))
+        box.addView(countdown, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        box.addView(space(6))
+        box.addView(enabledCheck)
+
+        val dialogHandler = Handler(Looper.getMainLooper())
+        lateinit var updater: Runnable
+        updater = object : Runnable {
+            override fun run() {
+                countdown.text = "Rings in ${remainingText(picker.hour, picker.minute)}"
+                dialogHandler.postDelayed(this, 1000)
+            }
+        }
+        picker.setOnTimeChangedListener { _, hour, minute -> countdown.text = "Rings in ${remainingText(hour, minute)}" }
+
+        val dialog = AlertDialog.Builder(this).setTitle(if (existing == null) "New alarm" else "Edit alarm").setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val name = titleInput.text.toString().trim().ifBlank { "Alarm" }
                 val updated = AlarmItem(existing?.id ?: java.util.UUID.randomUUID().toString(), name, picker.hour, picker.minute, enabledCheck.isChecked)
@@ -780,7 +801,10 @@ class MainActivity : AppCompatActivity() {
                 store.saveAlarms(items); ReminderScheduler.cancel(this, "alarm:${updated.id}")
                 if (updated.enabled) ReminderScheduler.scheduleDaily(this, "alarm:${updated.id}", updated.title, "Guide alarm", updated.hour, updated.minute)
                 render()
-            }.setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel", null).create()
+        dialog.setOnShowListener { updater.run() }
+        dialog.setOnDismissListener { dialogHandler.removeCallbacks(updater) }
+        dialog.show()
     }
 
     private fun courseActions(item: CourseItem) {
@@ -843,12 +867,88 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun editAttendanceDate(date: String, current: String) {
-        AlertDialog.Builder(this).setTitle(date).setSingleChoiceItems(arrayOf("Present", "Absent", "Leave", "Not marked"), arrayOf("Present", "Absent", "Leave", "Not marked").indexOf(current).coerceAtLeast(0)) { dialog, which ->
+        AlertDialog.Builder(this).setTitle(friendlyDate(date)).setSingleChoiceItems(arrayOf("Present", "Absent", "Leave", "Not marked"), arrayOf("Present", "Absent", "Leave", "Not marked").indexOf(current).coerceAtLeast(0)) { dialog, which ->
             val status = arrayOf("Present", "Absent", "Leave", "Not marked")[which]
             store.setAttendance(status, date)
             dialog.dismiss(); render()
         }.show()
     }
+
+    private fun markAttendance(status: String) {
+        store.setAttendance(status)
+        val saved = store.attendanceRecord()
+        Toast.makeText(this, "$status saved • ${friendlyDate(saved.date)} • ${saved.time}", Toast.LENGTH_SHORT).show()
+        render()
+    }
+
+    private fun attendanceRecordCard(record: AttendanceRecord, onClick: () -> Unit): LinearLayout {
+        val color = when (record.status) {
+            "Present" -> "#2B8B70"
+            "Absent" -> "#A9515C"
+            else -> "#9B7535"
+        }
+        val c = card("#151F3A", padding = 14)
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(text(record.status.take(1), 16f, "#FFFFFF", bold = true).apply {
+            gravity = Gravity.CENTER
+            background = rounded(color, 12)
+        }, LinearLayout.LayoutParams(dp(42), dp(42)))
+        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
+        labels.addView(text(record.status, 15f, "#FFFFFF", bold = true))
+        labels.addView(text("${friendlyDate(record.date)}${if (record.time.isNotBlank()) " • ${record.time}" else ""}", 12f, "#8C9AC1"))
+        row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(text("›", 25f, "#66759E"))
+        c.addView(row); c.setOnClickListener { onClick() }
+        return c
+    }
+
+    private fun alarmCard(item: AlarmItem, onClick: () -> Unit): LinearLayout {
+        val c = card("#17213E")
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        row.addView(text(if (item.enabled) "⏰" else "○", 24f, "#FFFFFF", bold = true).apply {
+            gravity = Gravity.CENTER
+            background = rounded(if (item.enabled) "#2D7EA6" else "#45516D", 16)
+        }, LinearLayout.LayoutParams(dp(58), dp(58)))
+        val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(14), 0, dp(8), 0) }
+        labels.addView(text(item.title, 17f, "#FFFFFF", bold = true))
+        val subtitle = text("", 13f, if (item.enabled) "#9CB6E4" else "#7F8AA8")
+        labels.addView(subtitle)
+        row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(text("›", 30f, "#65749E"))
+        c.addView(row); c.setOnClickListener { onClick() }
+        alarmCountdownViews.add(subtitle to item)
+        updateAlarmSubtitle(subtitle, item)
+        return c
+    }
+
+    private fun updateAlarmSubtitle(view: TextView, item: AlarmItem) {
+        view.text = if (item.enabled) "${timeText(item.hour, item.minute)} • ${remainingText(item.hour, item.minute)} left" else "${timeText(item.hour, item.minute)} • Off"
+    }
+
+    private fun startAlarmCountdowns() {
+        fun tick() {
+            if (detailPage != "alarms") return
+            alarmCountdownViews.forEach { (view, item) -> updateAlarmSubtitle(view, item) }
+            handler.postDelayed({ tick() }, 1000)
+        }
+        tick()
+    }
+
+    private fun remainingText(hour: Int, minute: Int): String {
+        val seconds = Duration.between(LocalDateTime.now(), nextTime(hour, minute)).seconds.coerceAtLeast(0)
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
+        val secs = seconds % 60
+        return when {
+            hours > 0 -> String.format(Locale.getDefault(), "%dh %02dm %02ds", hours, minutes, secs)
+            minutes > 0 -> String.format(Locale.getDefault(), "%dm %02ds", minutes, secs)
+            else -> String.format(Locale.getDefault(), "%ds", secs)
+        }
+    }
+
+    private fun friendlyDate(date: String): String = runCatching {
+        LocalDate.parse(date).format(DateTimeFormatter.ofPattern("EEE, dd MMM yyyy"))
+    }.getOrDefault(date)
 
     private fun waterCard(): LinearLayout {
         val count = store.waterCount()
@@ -950,7 +1050,13 @@ class MainActivity : AppCompatActivity() {
         hint = hintText; setSingleLine(true); setPadding(dp(14), dp(10), dp(14), dp(10)); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
     }
 
-    private fun rounded(hex: String, radiusDp: Int) = GradientDrawable().apply { setColor(Color.parseColor(hex)); cornerRadius = dp(radiusDp).toFloat() }
+    private fun rounded(hex: String, radiusDp: Int) = GradientDrawable().apply {
+        setColor(Color.parseColor(hex)); cornerRadius = dp(radiusDp).toFloat()
+    }
+
+    private fun roundedStroke(fill: String, stroke: String, strokeDp: Int, radiusDp: Int) = GradientDrawable().apply {
+        setColor(Color.parseColor(fill)); cornerRadius = dp(radiusDp).toFloat(); setStroke(dp(strokeDp), Color.parseColor(stroke))
+    }
 
     private fun gradient(top: String, bottom: String) = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.parseColor(top), Color.parseColor(bottom)))
 
