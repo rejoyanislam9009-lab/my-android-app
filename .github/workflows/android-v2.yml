@@ -35,6 +35,9 @@ jobs:
       - name: Apply Guide v2.7 auth and sidebar patch
         run: python3 .github/scripts/v27_patch.py
 
+      - name: Apply Guide v2.8 dashboard banner patch
+        run: python3 .github/scripts/v28_patch.py
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -46,13 +49,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 2.7 debug APK
+      - name: Build Guide 2.8 debug APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 2.7 APK
+      - name: Upload Guide 2.8 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v2.7-email-auth-apk
+          name: guide-v2.8-dashboard-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
