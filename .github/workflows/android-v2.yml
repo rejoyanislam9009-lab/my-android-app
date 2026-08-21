@@ -59,6 +59,28 @@ jobs:
       - name: Apply Guide v3.5 one-shot alarm repeat controls
         run: python3 .github/scripts/v35_patch.py
 
+      - name: Apply Guide v3.6 bundled adhan ringtone patch
+        run: python3 .github/scripts/v36_patch.py
+
+      - name: Download CC0 and public-domain bundled adhan audio
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/res/raw
+          curl --fail --location --retry 3 --silent --show-error \
+            'https://upload.wikimedia.org/wikipedia/commons/b/b0/Beautiful_adhan.ogg' \
+            --output app/src/main/res/raw/guide_adhan_beautiful.ogg
+          curl --fail --location --retry 3 --silent --show-error \
+            'https://upload.wikimedia.org/wikipedia/commons/a/a9/Muslim_calling_to_prayer.ogg' \
+            --output app/src/main/res/raw/guide_adhan_clear.ogg
+          curl --fail --location --retry 3 --silent --show-error \
+            'https://upload.wikimedia.org/wikipedia/commons/1/1f/Oraci%C3%B3n_Al-Azzan.ogg' \
+            --output app/src/main/res/raw/guide_adhan_short.ogg
+          test -s app/src/main/res/raw/guide_adhan_beautiful.ogg
+          test -s app/src/main/res/raw/guide_adhan_clear.ogg
+          test -s app/src/main/res/raw/guide_adhan_short.ogg
+          ls -lh app/src/main/res/raw/guide_adhan_*.ogg
+
       - name: Prepare stable beta signing key
         shell: bash
         run: |
@@ -79,13 +101,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.5 stable beta APK
+      - name: Build Guide 3.6 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.5 APK
+      - name: Upload Guide 3.6 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.5-one-shot-repeat-alarm-apk
+          name: guide-v3.6-bundled-adhan-ringtones-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
