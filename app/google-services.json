@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "512749667590",
+    "project_id": "guide-c4c2c",
+    "storage_bucket": "guide-c4c2c.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:512749667590:android:cbd98fa7db7988e523ca87",
+        "android_client_info": {
+          "package_name": "com.guide.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
