@@ -46,6 +46,20 @@ object ReminderScheduler {
         }
         alarm.setInexactRepeating(AlarmManager.RTC_WAKEUP, next.timeInMillis, AlarmManager.INTERVAL_DAY, pending)
     }
+
+    fun cancel(context: Context, key: String) {
+        val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val pending = PendingIntent.getBroadcast(
+            context,
+            key.hashCode(),
+            Intent(context, ReminderReceiver::class.java),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+        if (pending != null) {
+            alarm.cancel(pending)
+            pending.cancel()
+        }
+    }
 }
 
 class ReminderReceiver : BroadcastReceiver() {
