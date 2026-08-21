@@ -6,6 +6,8 @@
 
     <application
         android:allowBackup="true"
+        android:icon="@drawable/ic_guide"
+        android:roundIcon="@drawable/ic_guide"
         android:label="Guide"
         android:supportsRtl="true"
         android:theme="@style/Theme.Guide">
