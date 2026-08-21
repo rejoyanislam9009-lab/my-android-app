@@ -53,6 +53,9 @@ jobs:
       - name: Apply Guide v3.3 reset quick controls and pull refresh patch
         run: python3 .github/scripts/v33_patch.py
 
+      - name: Apply Guide v3.4 alarm indicator and layout fixes
+        run: python3 .github/scripts/v34_patch.py
+
       - name: Prepare stable beta signing key
         shell: bash
         run: |
@@ -73,13 +76,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.3 stable beta APK
+      - name: Build Guide 3.4 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.3 APK
+      - name: Upload Guide 3.4 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.3-reset-quick-off-pull-refresh-apk
+          name: guide-v3.4-alarm-layout-fixes-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
