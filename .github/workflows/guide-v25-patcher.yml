@@ -1,15 +1,15 @@
 name: Guide v2.5 temporary patcher
 
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
+  push:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   patch-guide-v25:
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feature/guide-v2' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Guide feature branch
