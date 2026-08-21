@@ -21,6 +21,7 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -29,6 +30,7 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.TimePicker
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -47,6 +49,9 @@ class MainActivity : AppCompatActivity() {
     private var clockView: TextView? = null
     private var currentTab = "home"
     private var detailPage: String? = null
+    private var drawerOverlay: View? = null
+    private var drawerPanel: LinearLayout? = null
+    private var lastBackPressedAt = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,6 +65,9 @@ class MainActivity : AppCompatActivity() {
         ReminderScheduler.ensureChannel(this)
         ReminderScheduler.scheduleAll(this, store)
         requestNotificationsIfNeeded()
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = handleSystemBack()
+        })
         render()
     }
 
@@ -80,10 +88,15 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun buildShell(): View {
+        val frame = FrameLayout(this).apply {
+            background = gradient("#080D1A", "#111A35")
+        }
+
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = gradient("#080D1A", "#111A35")
         }
+        shell.addView(buildTopBar(), LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(66)))
 
         val body = if (detailPage != null) buildDetailPage(detailPage!!) else when (currentTab) {
             "plan" -> buildPlanPage()
@@ -96,8 +109,208 @@ class MainActivity : AppCompatActivity() {
             isFillViewport = true
             addView(body)
         }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        shell.addView(buildBottomNav())
-        return shell
+        frame.addView(shell, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        val overlay = View(this).apply {
+            setBackgroundColor(Color.parseColor("#99000000"))
+            visibility = View.GONE
+            isClickable = true
+            setOnClickListener { closeDrawer() }
+        }
+        drawerOverlay = overlay
+        frame.addView(overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        val drawer = buildSidebar().apply {
+            visibility = View.GONE
+            elevation = dp(24).toFloat()
+        }
+        drawerPanel = drawer
+        frame.addView(drawer, FrameLayout.LayoutParams(dp(302), ViewGroup.LayoutParams.MATCH_PARENT, Gravity.START))
+        return frame
+    }
+
+    private fun buildTopBar(): View {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(12), dp(9), dp(14), dp(9))
+            background = rounded("#0D1630", 0)
+            elevation = dp(8).toFloat()
+        }
+        bar.addView(pillButton("☰", "#1C294A") { openDrawer() }, LinearLayout.LayoutParams(dp(48), dp(46)))
+        val labels = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), 0, dp(8), 0)
+        }
+        labels.addView(text("GUIDE", 11f, "#7C8BB6", bold = true).apply { letterSpacing = 0.13f })
+        labels.addView(text(screenTitle(), 17f, "#FFFFFF", bold = true))
+        bar.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        val initial = store.profileName().trim().firstOrNull()?.uppercaseChar()?.toString() ?: "G"
+        bar.addView(text(initial, 16f, "#FFFFFF", bold = true).apply {
+            gravity = Gravity.CENTER
+            background = rounded("#6A56F4", 15)
+            setOnClickListener { openDrawer() }
+        }, LinearLayout.LayoutParams(dp(42), dp(42)))
+        return bar
+    }
+
+    private fun screenTitle(): String = detailPage?.let {
+        when (it) {
+            "routines" -> "Routines"
+            "meals" -> "Meal plan"
+            "alarms" -> "Alarms"
+            "courses" -> "Courses"
+            "money" -> "Accounts"
+            "attendance" -> "Attendance"
+            else -> "Guide"
+        }
+    } ?: when (currentTab) {
+        "plan" -> "Plan"
+        "track" -> "Track"
+        "more" -> "Settings"
+        else -> "Dashboard"
+    }
+
+    private fun buildSidebar(): LinearLayout {
+        val drawer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(24), dp(18), dp(18))
+            background = gradient("#121C38", "#0B1227")
+        }
+
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        brand.addView(text("G", 25f, "#FFFFFF", bold = true).apply {
+            gravity = Gravity.CENTER
+            background = rounded("#7257FF", 20)
+        }, LinearLayout.LayoutParams(dp(58), dp(58)))
+        val brandText = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(13), 0, 0, 0)
+        }
+        brandText.addView(text("Guide", 22f, "#FFFFFF", bold = true))
+        brandText.addView(text(store.profileName(), 12f, "#8E9BC3"))
+        brand.addView(brandText, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        drawer.addView(brand)
+        drawer.addView(space(24))
+
+        drawer.addView(drawerSection("OVERVIEW"))
+        drawer.addView(drawerItem("⌂", "Dashboard", currentTab == "home" && detailPage == null) { navigate("home") })
+        drawer.addView(drawerItem("▤", "Daily planner", currentTab == "plan" && detailPage == null) { navigate("plan") })
+        drawer.addView(space(13))
+
+        drawer.addView(drawerSection("PLANNING"))
+        drawer.addView(drawerItem("✓", "Routines", detailPage == "routines") { navigate("plan", "routines") })
+        drawer.addView(drawerItem("🍽", "Meals", detailPage == "meals") { navigate("plan", "meals") })
+        drawer.addView(drawerItem("⏰", "Alarms", detailPage == "alarms") { navigate("plan", "alarms") })
+        drawer.addView(drawerItem("▤", "Courses", detailPage == "courses") { navigate("plan", "courses") })
+        drawer.addView(space(13))
+
+        drawer.addView(drawerSection("TRACKING"))
+        drawer.addView(drawerItem("◎", "Attendance", detailPage == "attendance") { navigate("track", "attendance") })
+        drawer.addView(drawerItem("▣", "Accounts", detailPage == "money") { navigate("track", "money") })
+        drawer.addView(drawerItem("◉", "Track overview", currentTab == "track" && detailPage == null) { navigate("track") })
+        drawer.addView(space(13))
+
+        drawer.addView(drawerSection("ACCOUNT"))
+        drawer.addView(drawerItem("⚙", "Settings", currentTab == "more" && detailPage == null) { navigate("more") })
+
+        drawer.addView(Space(this), LinearLayout.LayoutParams(1, 0, 1f))
+        val lockCard = card("#1A2444", padding = 14)
+        val lockRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        lockRow.addView(text("⌁", 21f, "#FFB5B9", bold = true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(42), dp(42)))
+        val lockLabels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, 0, 0) }
+        lockLabels.addView(text("Lock Guide", 15f, "#FFFFFF", bold = true))
+        lockLabels.addView(text("Require your PIN again", 11f, "#7F8EB7"))
+        lockRow.addView(lockLabels)
+        lockCard.addView(lockRow)
+        lockCard.setOnClickListener { lockApp() }
+        drawer.addView(lockCard)
+        return drawer
+    }
+
+    private fun drawerSection(label: String) = text(label, 10f, "#62729D", bold = true).apply {
+        letterSpacing = 0.12f
+        setPadding(dp(8), dp(2), 0, dp(6))
+    }
+
+    private fun drawerItem(icon: String, label: String, active: Boolean, action: () -> Unit): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = if (active) rounded("#26335B", 14) else rounded("#121C38", 14)
+            setOnClickListener { action() }
+        }
+        row.addView(text(icon, 18f, if (active) "#C6BCFF" else "#8E9BC4", bold = true).apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(dp(38), dp(38)))
+        row.addView(text(label, 14f, if (active) "#FFFFFF" else "#B4BFDF", bold = active).apply { setPadding(dp(8), 0, 0, 0) }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (active) row.addView(text("•", 18f, "#8D79FF", bold = true))
+        return row
+    }
+
+    private fun openDrawer() {
+        val panel = drawerPanel ?: return
+        val overlay = drawerOverlay ?: return
+        overlay.visibility = View.VISIBLE
+        panel.visibility = View.VISIBLE
+        panel.translationX = -dp(302).toFloat()
+        panel.animate().translationX(0f).setDuration(190).start()
+        overlay.alpha = 0f
+        overlay.animate().alpha(1f).setDuration(170).start()
+    }
+
+    private fun closeDrawer(immediate: Boolean = false) {
+        val panel = drawerPanel ?: return
+        val overlay = drawerOverlay ?: return
+        if (panel.visibility != View.VISIBLE) return
+        if (immediate) {
+            panel.visibility = View.GONE
+            overlay.visibility = View.GONE
+            panel.translationX = 0f
+            overlay.alpha = 1f
+            return
+        }
+        panel.animate().translationX(-dp(302).toFloat()).setDuration(170).withEndAction {
+            panel.visibility = View.GONE
+            panel.translationX = 0f
+        }.start()
+        overlay.animate().alpha(0f).setDuration(150).withEndAction {
+            overlay.visibility = View.GONE
+            overlay.alpha = 1f
+        }.start()
+    }
+
+    private fun navigate(tab: String, detail: String? = null) {
+        currentTab = tab
+        detailPage = detail
+        closeDrawer(true)
+        render()
+    }
+
+    private fun handleSystemBack() {
+        if (drawerPanel?.visibility == View.VISIBLE) {
+            closeDrawer()
+            return
+        }
+        if (detailPage != null) {
+            detailPage = null
+            render()
+            return
+        }
+        if (currentTab != "home") {
+            currentTab = "home"
+            render()
+            return
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastBackPressedAt <= 1800L) {
+            finish()
+        } else {
+            lastBackPressedAt = now
+            Toast.makeText(this, "Press back again to exit Guide", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun page(): LinearLayout = LinearLayout(this).apply {
@@ -267,7 +480,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun buildMorePage(): LinearLayout {
         val root = page()
-        pageHeader(root, "More", "Profile, reminder settings and backup.")
+        pageHeader(root, "Settings", "Profile, reminder settings and backup.")
 
         root.addView(sectionTitle("Reminder system"))
         val exact = ReminderScheduler.exactAlarmAvailable(this)
@@ -294,7 +507,7 @@ class MainActivity : AppCompatActivity() {
         root.addView(rowCard("⇧", "Share backup", "Export your Guide data as JSON", "#6C668E") { shareBackup() })
         root.addView(space(20))
 
-        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "2.0"
+        val version = runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull() ?: "2.1"
         root.addView(text("GUIDE • Version $version", 11f, "#5F6D95", bold = true).apply { gravity = Gravity.CENTER; letterSpacing = 0.1f })
         return root
     }
@@ -439,40 +652,6 @@ class MainActivity : AppCompatActivity() {
             if (i < 30) root.addView(space(7))
         }
         return root
-    }
-
-    private fun buildBottomNav(): View {
-        val nav = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(dp(8), dp(7), dp(8), dp(9))
-            background = rounded("#0E1730", 0)
-            elevation = dp(14).toFloat()
-        }
-        val items = listOf(
-            Triple("home", "⌂", "Home"),
-            Triple("plan", "▤", "Plan"),
-            Triple("track", "◉", "Track"),
-            Triple("more", "•••", "More")
-        )
-        items.forEach { item ->
-            val active = currentTab == item.first
-            val tab = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setPadding(dp(4), dp(5), dp(4), dp(5))
-                background = if (active) rounded("#202B50", 14) else rounded("#0E1730", 14)
-                setOnClickListener {
-                    currentTab = item.first
-                    detailPage = null
-                    render()
-                }
-            }
-            tab.addView(text(item.second, 19f, if (active) "#FFFFFF" else "#7180AA", bold = true).apply { gravity = Gravity.CENTER })
-            tab.addView(text(item.third, 11f, if (active) "#B8C3E8" else "#65739B", bold = active).apply { gravity = Gravity.CENTER })
-            nav.addView(tab, LinearLayout.LayoutParams(0, dp(62), 1f).apply { marginStart = dp(2); marginEnd = dp(2) })
-        }
-        return nav
     }
 
     private fun routineActions(item: RoutineItem) {
