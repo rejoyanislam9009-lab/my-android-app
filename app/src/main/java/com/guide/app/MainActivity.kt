@@ -775,7 +775,8 @@ class MainActivity : AppCompatActivity() {
             gravity = Gravity.CENTER; setPadding(dp(12), dp(11), dp(12), dp(11)); background = roundedStroke("#151F3A", "#66FFFFFF", 1, 13)
         }
         var selectedRingtone = existing?.ringtoneUri ?: ""
-        val ringtoneButton = pillButton("রিংটোন: ${ringtoneTitle(selectedRingtone)}", "#34466F") {
+        lateinit var ringtoneButton: Button
+        ringtoneButton = pillButton("রিংটোন: ${ringtoneTitle(selectedRingtone)}", "#34466F") {
             pickRingtone(selectedRingtone) { uri ->
                 selectedRingtone = uri
                 ringtoneButton.text = "রিংটোন: ${ringtoneTitle(uri)}"
@@ -886,7 +887,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun remainingText(hour: Int, minute: Int): String {
         val seconds = Duration.between(LocalDateTime.now(), nextTime(hour, minute)).seconds.coerceAtLeast(0); val hours = seconds / 3600; val minutes = (seconds % 3600) / 60; val secs = seconds % 60
-        return when { hours > 0 -> String.format(Locale.getDefault(), "%dঘ %02দমি %02দসে", hours, minutes, secs).replace("দমি", "মি").replace("দসে", "সে"); minutes > 0 -> String.format(Locale.getDefault(), "%dমি %02দসে", minutes, secs).replace("দসে", "সে"); else -> String.format(Locale.getDefault(), "%dসে", secs) }
+        return when {
+            hours > 0 -> "${hours}ঘ ${minutes.toString().padStart(2, '0')}মি ${secs.toString().padStart(2, '0')}সে"
+            minutes > 0 -> "${minutes}মি ${secs.toString().padStart(2, '0')}সে"
+            else -> "${secs}সে"
+        }
     }
 
     private fun pickRingtone(current: String, callback: (String) -> Unit) {
