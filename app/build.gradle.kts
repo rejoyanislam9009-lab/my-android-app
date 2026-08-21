@@ -30,6 +30,7 @@ android {
                 storePassword = betaStorePassword
                 keyAlias = betaKeyAlias
                 keyPassword = betaKeyPassword
+                storeType = "pkcs12"
             }
         }
     }
