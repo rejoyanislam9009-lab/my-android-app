@@ -17,3 +17,5 @@ Guide is an offline-first Android personal routine companion.
 Every push to the feature branch runs GitHub Actions. Download the generated `guide-debug-apk` artifact and install the APK on Android.
 
 Package: `com.guide.app`
+
+Initial mobile-only CI validation enabled.
