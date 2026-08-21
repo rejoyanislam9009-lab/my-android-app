@@ -18,7 +18,19 @@ jobs:
 
       - name: Apply Guide v2.5 source patch
         shell: bash
-        run: python3 .github/scripts/v25_patch.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/v25_patch.py')
+          s = p.read_text()
+          start = "rep('        labels.addView(text(record.status, 15f,"
+          if start in s:
+              line_start = s.index(start)
+              line_end = s.index("\n", line_start)
+              s = s[:line_start] + "s = s.replace('labels.addView(text(record.status, 15f', 'labels.addView(text(statusBn(record.status), 15f', 1)" + s[line_end:]
+              p.write_text(s)
+          PY
+          python3 .github/scripts/v25_patch.py
 
       - name: Set up JDK 17
         uses: actions/setup-java@v5
