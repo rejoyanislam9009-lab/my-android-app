@@ -38,7 +38,10 @@ data class AlarmItem(
     val title: String,
     val hour: Int,
     val minute: Int,
-    val enabled: Boolean = true
+    val enabled: Boolean = true,
+    val soundEnabled: Boolean = true,
+    val vibrateEnabled: Boolean = true,
+    val ringtoneUri: String = ""
 )
 
 data class MoneyRecord(
@@ -64,6 +67,17 @@ data class AttendanceRecord(
     val time: String = "",
     val updatedAt: Long = 0L
 )
+
+data class PrayerSettings(
+    val enabled: Boolean,
+    val latitude: Double,
+    val longitude: Double,
+    val azanUri: String,
+    val vibrateEnabled: Boolean,
+    val enabledPrayers: Set<String>
+) {
+    fun hasLocation(): Boolean = latitude in -90.0..90.0 && longitude in -180.0..180.0 && !(latitude == 0.0 && longitude == 0.0)
+}
 
 class GuideStore(context: Context) {
     private val prefs = context.getSharedPreferences("guide_store", Context.MODE_PRIVATE)
@@ -92,7 +106,6 @@ class GuideStore(context: Context) {
         val expected = prefs.getString("pin_hash", "") ?: ""
         val salt = prefs.getString("pin_salt", null)
         if (!salt.isNullOrBlank()) return expected == pbkdf2(pin, salt)
-
         val legacyOk = expected == legacyHash(pin)
         if (legacyOk) savePin(pin)
         return legacyOk
@@ -177,7 +190,10 @@ class GuideStore(context: Context) {
                 title = o.optString("title", "Alarm"),
                 hour = o.optInt("hour", 7),
                 minute = o.optInt("minute", 0),
-                enabled = o.optBoolean("enabled", true)
+                enabled = o.optBoolean("enabled", true),
+                soundEnabled = o.optBoolean("soundEnabled", true),
+                vibrateEnabled = o.optBoolean("vibrateEnabled", true),
+                ringtoneUri = o.optString("ringtoneUri", "")
             )
         }
     }
@@ -185,9 +201,45 @@ class GuideStore(context: Context) {
     fun saveAlarms(items: List<AlarmItem>) {
         val array = JSONArray()
         items.forEach { item -> array.put(JSONObject().apply {
-            put("id", item.id); put("title", item.title); put("hour", item.hour); put("minute", item.minute); put("enabled", item.enabled)
+            put("id", item.id); put("title", item.title); put("hour", item.hour); put("minute", item.minute)
+            put("enabled", item.enabled); put("soundEnabled", item.soundEnabled); put("vibrateEnabled", item.vibrateEnabled)
+            put("ringtoneUri", item.ringtoneUri)
         }) }
         putJson("alarms", array)
+    }
+
+    fun prayerSettings(): PrayerSettings {
+        val defaults = setOf("Fajr", "Dhuhr", "Asr", "Maghrib", "Isha")
+        return PrayerSettings(
+            enabled = prefs.getBoolean("prayer_enabled", false),
+            latitude = prefs.getString("prayer_lat", "0")?.toDoubleOrNull() ?: 0.0,
+            longitude = prefs.getString("prayer_lon", "0")?.toDoubleOrNull() ?: 0.0,
+            azanUri = prefs.getString("prayer_azan_uri", "") ?: "",
+            vibrateEnabled = prefs.getBoolean("prayer_vibrate", false),
+            enabledPrayers = prefs.getStringSet("prayer_enabled_names", null)?.toSet() ?: defaults
+        )
+    }
+
+    fun setPrayerEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("prayer_enabled", enabled).apply()
+    }
+
+    fun setPrayerLocation(latitude: Double, longitude: Double) {
+        prefs.edit().putString("prayer_lat", latitude.toString()).putString("prayer_lon", longitude.toString()).apply()
+    }
+
+    fun setPrayerAzanUri(uri: String) {
+        prefs.edit().putString("prayer_azan_uri", uri).apply()
+    }
+
+    fun setPrayerVibrate(enabled: Boolean) {
+        prefs.edit().putBoolean("prayer_vibrate", enabled).apply()
+    }
+
+    fun setPrayerAlarmEnabled(name: String, enabled: Boolean) {
+        val values = prayerSettings().enabledPrayers.toMutableSet()
+        if (enabled) values.add(name) else values.remove(name)
+        prefs.edit().putStringSet("prayer_enabled_names", values).apply()
     }
 
     fun attendanceFor(date: String = today()): String = attendanceRecord(date).status
@@ -220,20 +272,15 @@ class GuideStore(context: Context) {
                 put("updatedAt", System.currentTimeMillis())
             })
         }
-        prefs.edit()
-            .putString("attendance", legacy.toString())
-            .putString("attendance_details", details.toString())
-            .apply()
+        prefs.edit().putString("attendance", legacy.toString()).putString("attendance_details", details.toString()).apply()
     }
 
     fun attendanceSummaryForCurrentMonth(): Map<String, Int> {
         val month = LocalDate.now().toString().substring(0, 7)
         val counts = linkedMapOf("Present" to 0, "Absent" to 0, "Leave" to 0)
         val dates = linkedSetOf<String>()
-        val legacy = attendanceObject()
-        legacy.keys().forEach { dates.add(it) }
-        val details = attendanceDetailsObject()
-        details.keys().forEach { dates.add(it) }
+        val legacy = attendanceObject(); legacy.keys().forEach { dates.add(it) }
+        val details = attendanceDetailsObject(); details.keys().forEach { dates.add(it) }
         dates.filter { it.startsWith(month) }.forEach { date ->
             val status = attendanceFor(date)
             if (counts.containsKey(status)) counts[status] = (counts[status] ?: 0) + 1
@@ -334,11 +381,8 @@ class GuideStore(context: Context) {
 
     fun streak(): Int {
         val dates = prefs.getStringSet("completed_days", emptySet()) ?: emptySet()
-        var cursor = LocalDate.now()
-        var count = 0
-        while (dates.contains(cursor.format(dateFormatter))) {
-            count++; cursor = cursor.minusDays(1)
-        }
+        var cursor = LocalDate.now(); var count = 0
+        while (dates.contains(cursor.format(dateFormatter))) { count++; cursor = cursor.minusDays(1) }
         return count
     }
 
@@ -362,8 +406,9 @@ class GuideStore(context: Context) {
     }
 
     fun exportJson(): String = JSONObject().apply {
+        val prayer = prayerSettings()
         put("app", "Guide")
-        put("version", 2)
+        put("version", 4)
         put("profileName", profileName())
         put("routines", jsonArray("routines"))
         put("meals", jsonArray("meals"))
@@ -372,6 +417,14 @@ class GuideStore(context: Context) {
         put("attendanceDetails", attendanceDetailsObject())
         put("moneyRecords", jsonArray("money_records"))
         put("courses", jsonArray("courses"))
+        put("prayer", JSONObject().apply {
+            put("enabled", prayer.enabled)
+            put("latitude", prayer.latitude)
+            put("longitude", prayer.longitude)
+            put("azanUri", prayer.azanUri)
+            put("vibrateEnabled", prayer.vibrateEnabled)
+            put("enabledPrayers", JSONArray(prayer.enabledPrayers.toList()))
+        })
     }.toString(2)
 
     private fun jsonArray(key: String): JSONArray {
