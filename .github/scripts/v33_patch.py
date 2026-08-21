@@ -44,7 +44,8 @@ if 'সব অ্যালার্ম ও রিমাইন্ডার এক
 
     settings_anchor = '''        root.addView(space(9)); root.addView(rowCard("¤", "Currency", currency(), "#2F826E") { changeCurrency() })
         root.addView(space(20))
-        root.addView(sectionTitle("Data")); root.addView(rowCard("⇧", "Share backup", "Export your Guide data as JSON", "#6C668E") { shareBackup() })'''
+        root.addView(sectionTitle("ডাটা ও রিপোর্ট"))
+        root.addView(rowCard("⇧", "ব্যাকআপ ও রিস্টোর  NEW", "অটো ব্যাকআপ, manual save এবং restore", "#6C668E") { startActivity(Intent(this, BackupActivity::class.java)) })'''
     settings_new = '''        root.addView(space(9)); root.addView(rowCard("¤", "Currency", currency(), "#2F826E") { changeCurrency() })
         root.addView(space(20))
         root.addView(sectionTitle("দ্রুত নিয়ন্ত্রণ"))
@@ -52,7 +53,8 @@ if 'সব অ্যালার্ম ও রিমাইন্ডার এক
         root.addView(space(9))
         root.addView(rowCard("↻", "Guide রিসেট করুন", "সমস্যা হলে local data ও settings ডিফল্ট করুন", "#6B4B8E") { confirmResetGuide() })
         root.addView(space(20))
-        root.addView(sectionTitle("Data")); root.addView(rowCard("⇧", "Share backup", "Export your Guide data as JSON", "#6C668E") { shareBackup() })'''
+        root.addView(sectionTitle("ডাটা ও রিপোর্ট"))
+        root.addView(rowCard("⇧", "ব্যাকআপ ও রিস্টোর  NEW", "অটো ব্যাকআপ, manual save এবং restore", "#6C668E") { startActivity(Intent(this, BackupActivity::class.java)) })'''
     s = req(s, settings_anchor, settings_new, 'settings reset and quick off cards')
 
     marker = '    private fun lockApp() {'
@@ -134,7 +136,6 @@ g = Path('app/build.gradle.kts')
 gs = g.read_text()
 if 'swiperefreshlayout' not in gs:
     gs = req(gs, 'implementation("androidx.appcompat:appcompat:1.7.0")', 'implementation("androidx.appcompat:appcompat:1.7.0")\n    implementation("androidx.swiperefreshlayout:swiperefreshlayout:1.1.0")', 'swipe refresh dependency')
-# v3.2 workflow did not change the manifest version, so normalize from the current source value.
 gs = gs.replace('versionCode = 14', 'versionCode = 16', 1)
 gs = gs.replace('versionName = "3.1.0"', 'versionName = "3.3.0"', 1)
 g.write_text(gs)
