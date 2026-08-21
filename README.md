@@ -31,4 +31,4 @@ Every push to the feature branch runs GitHub Actions. Download the generated APK
 
 Package: `com.guide.app`
 
-Mobile-only CI validation enabled.
+Mobile-only CI validation enabled. v2.5 patch validation active.
