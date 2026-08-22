@@ -122,6 +122,18 @@ jobs:
       - name: Apply Guide v3.23 separated Rent Mess and member completion UI
         run: python3 .github/scripts/v323_patch.py
 
+      - name: Apply Guide v3.24 simple Room/Mess payments and PDF sharing
+        shell: bash
+        run: |
+          python3 .github/scripts/v324_patch.py
+          python3 .github/scripts/v324_compile_fix.py
+
+      - name: Apply Guide v3.25 partial payment premium UI and scroll retention
+        shell: bash
+        run: |
+          python3 .github/scripts/v325_prepare.py
+          python3 .github/scripts/v325_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -171,13 +183,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.23 stable beta APK
+      - name: Build Guide 3.25 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.23 APK
+      - name: Upload Guide 3.25 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.23-separated-rent-mess-apk
+          name: guide-v3.25-stable-beta-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
