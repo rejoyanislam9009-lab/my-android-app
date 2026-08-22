@@ -121,7 +121,8 @@ jobs:
         run: python3 .github/scripts/v328_patch.py
 
       - name: Apply Guide v3.29 History PDF feedback offline UX and dashboard
-        run: python3 .github/scripts/v329_patch.py
+        shell: bash
+        run: python3 .github/scripts/v329_patch.py || python3 .github/scripts/v329_recover.py
 
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
