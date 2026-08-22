@@ -18,5 +18,10 @@ replacement = '''    page_scroll_anchor = '        val refresh = SwipeRefreshLay
 
 '''
 s = s[:start] + replacement + s[end:]
+# PdfWriter is a nested class. Format its local numeric values directly instead
+# of relying on the enclosing GuidePdfReport.money helper.
+s = s.replace('money(totalValue)', 'String.format(Locale.US, "%.2f", totalValue)')
+s = s.replace('money(paidValue)', 'String.format(Locale.US, "%.2f", paidValue)')
+s = s.replace('money(dueValue)', 'String.format(Locale.US, "%.2f", dueValue)')
 p.write_text(s)
-print('v3.25 prepare: adapted scroll retention to SwipeRefresh shell')
+print('v3.25 prepare: adapted scroll shell and PDF number formatting')
