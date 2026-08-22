@@ -92,6 +92,9 @@ jobs:
       - name: Apply Guide v3.15 login UX Google auth and missing border patch
         run: python3 .github/scripts/v315_patch.py
 
+      - name: Apply Guide v3.16 premium sidebar backdrop patch
+        run: python3 .github/scripts/v316_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -141,13 +144,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.15 stable beta APK
+      - name: Build Guide 3.16 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.15 APK
+      - name: Upload Guide 3.16 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.15-login-google-ready-apk
+          name: guide-v3.16-premium-sidebar-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
