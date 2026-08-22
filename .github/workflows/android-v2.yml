@@ -102,6 +102,7 @@ jobs:
         shell: bash
         run: |
           python3 .github/scripts/v318_patch.py || python3 .github/scripts/v318_recover.py
+          python3 .github/scripts/v318_compile_fix.py
 
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
