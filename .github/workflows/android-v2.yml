@@ -116,6 +116,9 @@ jobs:
       - name: Apply Guide v3.21 finance center and Room/Mess accounting
         run: python3 .github/scripts/v321_patch.py
 
+      - name: Apply Guide v3.22 Room/Mess paid status and fair rent splitting
+        run: python3 .github/scripts/v322_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -165,13 +168,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.21 stable beta APK
+      - name: Build Guide 3.22 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.21 APK
+      - name: Upload Guide 3.22 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.21-finance-room-mess-apk
+          name: guide-v3.22-room-mess-paid-status-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
