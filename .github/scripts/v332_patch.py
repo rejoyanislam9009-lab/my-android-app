@@ -8,7 +8,7 @@ def require(text: str, needle: str, name: str) -> None:
 
 
 # Guide v3.32
-# - Preserve a visible content anchor, not only raw scrollY, when MainActivity
+# - Preserve a visible text anchor, not only raw scrollY, when MainActivity
 #   rebuilds after Track/Attendance/finance/reminder actions.
 # - Add the large offline Saudi vocabulary destination.
 # - Keep existing finance/alarm/backup code paths unchanged.
@@ -19,18 +19,36 @@ if 'GuideScrollAnchorV332' not in ms:
 
         handler.removeCallbacksAndMessages(null)'''
     capture_new = '''        val previousScrollY = guideContentScroll?.scrollY ?: 0
-        val previousBody = guideContentScroll?.getChildAt(0) as? ViewGroup
-        var previousAnchorIndex = -1
-        var previousAnchorOffset = 0
-        if (previousBody != null && previousScrollY > 0) {
-            for (i in 0 until previousBody.childCount) {
-                val child = previousBody.getChildAt(i)
-                if (child.bottom > previousScrollY) {
-                    previousAnchorIndex = i
-                    previousAnchorOffset = previousScrollY - child.top
-                    break
+        var previousAnchorText: String? = null
+        var previousAnchorViewportY = 0
+        val previousScroll = guideContentScroll
+        if (previousScroll != null && previousScrollY > 0) {
+            val scrollLocation = IntArray(2)
+            previousScroll.getLocationOnScreen(scrollLocation)
+            var bestDistance = Int.MAX_VALUE
+            fun captureVisibleTextV332(view: View) {
+                if (view.visibility != View.VISIBLE) return
+                if (view is TextView) {
+                    val value = view.text?.toString()?.trim().orEmpty()
+                    if (value.isNotBlank() && value.length <= 80 && view.height > 0) {
+                        val location = IntArray(2)
+                        view.getLocationOnScreen(location)
+                        val offset = location[1] - scrollLocation[1]
+                        if (offset >= -view.height && offset <= previousScroll.height) {
+                            val distance = kotlin.math.abs(offset)
+                            if (distance < bestDistance) {
+                                bestDistance = distance
+                                previousAnchorText = value
+                                previousAnchorViewportY = offset
+                            }
+                        }
+                    }
+                }
+                if (view is ViewGroup) {
+                    for (i in 0 until view.childCount) captureVisibleTextV332(view.getChildAt(i))
                 }
             }
+            previousScroll.getChildAt(0)?.let { captureVisibleTextV332(it) }
         }
 
         handler.removeCallbacksAndMessages(null)'''
@@ -46,22 +64,35 @@ if 'GuideScrollAnchorV332' not in ms:
             }
         }'''
     restore_new = '''        if (previousPageKey == pageKey && previousScrollY > 0) {
-            // GuideScrollAnchorV332: raw scrollY can visibly jump when a card
-            // above the viewport changes height. Restore the same direct body
-            // child + offset instead, then repeat after late layout passes.
+            // GuideScrollAnchorV332: after a button changes card height, restoring
+            // only the old Y can still look like a jump. Keep the same visible
+            // text at the same viewport position whenever possible.
+            fun findTextAnchorV332(view: View, target: String): TextView? {
+                if (view is TextView && view.text?.toString()?.trim() == target) return view
+                if (view is ViewGroup) {
+                    for (i in 0 until view.childCount) {
+                        val found = findTextAnchorV332(view.getChildAt(i), target)
+                        if (found != null) return found
+                    }
+                }
+                return null
+            }
             fun restoreGuideAnchorV332() {
                 val newScroll = guideContentScroll ?: return
-                val newBody = newScroll.getChildAt(0) as? ViewGroup
-                val target = if (
-                    newBody != null &&
-                    previousAnchorIndex >= 0 &&
-                    previousAnchorIndex < newBody.childCount
-                ) {
-                    newBody.getChildAt(previousAnchorIndex).top + previousAnchorOffset
-                } else {
-                    previousScrollY
+                val anchor = previousAnchorText?.let { target ->
+                    newScroll.getChildAt(0)?.let { findTextAnchorV332(it, target) }
                 }
-                newScroll.scrollTo(0, target.coerceAtLeast(0))
+                if (anchor != null) {
+                    val scrollLocation = IntArray(2)
+                    val anchorLocation = IntArray(2)
+                    newScroll.getLocationOnScreen(scrollLocation)
+                    anchor.getLocationOnScreen(anchorLocation)
+                    val currentOffset = anchorLocation[1] - scrollLocation[1]
+                    val delta = currentOffset - previousAnchorViewportY
+                    newScroll.scrollTo(0, (newScroll.scrollY + delta).coerceAtLeast(0))
+                } else {
+                    newScroll.scrollTo(0, previousScrollY)
+                }
             }
             guideContentScroll?.post {
                 restoreGuideAnchorV332()
@@ -74,7 +105,7 @@ if 'GuideScrollAnchorV332' not in ms:
     require(ms, restore_old, 'v3.29 scroll restore block')
     ms = ms.replace(restore_old, restore_new, 1)
     mp.write_text(ms)
-    print('v3.32 MainActivity visual-anchor scroll preservation applied')
+    print('v3.32 MainActivity visible-text scroll anchor preservation applied')
 else:
     print('v3.32 MainActivity scroll patch already applied')
 
