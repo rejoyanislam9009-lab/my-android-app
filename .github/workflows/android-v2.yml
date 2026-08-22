@@ -89,6 +89,9 @@ jobs:
       - name: Apply Guide v3.14 fixed-width rainbow gradient border patch
         run: python3 .github/scripts/v314_patch.py
 
+      - name: Apply Guide v3.15 login UX Google auth and missing border patch
+        run: python3 .github/scripts/v315_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -123,18 +126,28 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Show beta signing SHA-1 for Google Login
+        shell: bash
+        run: |
+          echo "Guide beta signing certificate fingerprint:"
+          keytool -list -v \
+            -keystore "$GUIDE_BETA_KEYSTORE" \
+            -alias "$GUIDE_BETA_KEY_ALIAS" \
+            -storepass "$GUIDE_BETA_STORE_PASSWORD" \
+            -keypass "$GUIDE_BETA_KEY_PASSWORD" | grep -E 'SHA1:|SHA-1:'
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.14 stable beta APK
+      - name: Build Guide 3.15 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.14 APK
+      - name: Upload Guide 3.15 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.14-rainbow-gradient-border-apk
+          name: guide-v3.15-login-google-ready-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
