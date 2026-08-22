@@ -7,6 +7,32 @@ def require(text: str, needle: str, name: str) -> None:
         raise SystemExit(f'pattern not found: {name}')
 
 
+def replace_kotlin_function(text: str, signature: str, replacement: str) -> tuple[str, bool]:
+    """Replace one Kotlin function by matching its balanced outer braces."""
+    start = text.find(signature)
+    if start < 0:
+        return text, False
+    brace = text.find('{', start)
+    if brace < 0:
+        raise SystemExit(f'opening brace not found: {signature}')
+    depth = 0
+    end = -1
+    for i in range(brace, len(text)):
+        ch = text[i]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+    if end < 0:
+        raise SystemExit(f'closing brace not found: {signature}')
+    while end < len(text) and text[end] == '\n':
+        end += 1
+    return text[:start] + replacement + text[end:], True
+
+
 # ---------------------------------------------------------------------------
 # Guide v3.19
 # 1) Make every long custom form dialog vertically scrollable so controls and
@@ -27,25 +53,9 @@ if 'GuideScrollableDialogsV319' not in ms:
         require(ms, 'import android.view.Gravity\n', 'MainActivity Gravity import')
         ms = ms.replace('import android.view.Gravity\n', 'import android.view.Gravity\nimport android.view.KeyEvent\n', 1)
 
-    anchor = '    private fun buildTopBar(): View {\n'
-    require(ms, anchor, 'MainActivity helper anchor')
-    helpers = r'''    // GuideScrollableDialogsV319: AlertDialog custom content must be
-    // scrollable on small screens. Dialog action buttons stay outside the
-    // ScrollView, so Save/Cancel are always reachable.
-    private fun scrollableDialogContent(content: View): ScrollView = ScrollView(this).apply {
-        isFillViewport = false
-        isVerticalScrollBarEnabled = true
-        overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
-        clipToPadding = false
-        addView(content, ViewGroup.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ))
-    }
-
-    // Preview audio belongs to STREAM_MUSIC. Consume volume-key events here and
-    // adjust that stream explicitly so no dialog/key handler can interpret a
-    // volume press as a request to stop playback.
+    new_dispatch = r'''    // GuideVolumeKeysV319: preview audio belongs to STREAM_MUSIC.
+    // Volume presses are consumed here and only change media volume; they must
+    // never be treated as a shortcut to stop preview or active alarm audio.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         when (event.keyCode) {
             KeyEvent.KEYCODE_VOLUME_UP,
@@ -67,7 +77,34 @@ if 'GuideScrollableDialogsV319' not in ms:
     }
 
 '''
-    ms = ms.replace(anchor, helpers + anchor, 1)
+
+    # Some earlier Guide patches already define dispatchKeyEvent. Replace that
+    # handler instead of adding a second override, which would fail Kotlin
+    # compilation and can preserve the old volume-to-stop behavior.
+    ms, replaced_dispatch = replace_kotlin_function(
+        ms,
+        '    override fun dispatchKeyEvent(event: KeyEvent): Boolean {',
+        new_dispatch
+    )
+
+    anchor = '    private fun buildTopBar(): View {\n'
+    require(ms, anchor, 'MainActivity helper anchor')
+    scroll_helper = r'''    // GuideScrollableDialogsV319: AlertDialog custom content must be
+    // scrollable on small screens. Dialog action buttons stay outside the
+    // ScrollView, so Save/Cancel are always reachable.
+    private fun scrollableDialogContent(content: View): ScrollView = ScrollView(this).apply {
+        isFillViewport = false
+        isVerticalScrollBarEnabled = true
+        overScrollMode = View.OVER_SCROLL_IF_CONTENT_SCROLLS
+        clipToPadding = false
+        addView(content, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ))
+    }
+
+'''
+    ms = ms.replace(anchor, scroll_helper + ('' if replaced_dispatch else new_dispatch) + anchor, 1)
 
     form_count = ms.count('.setView(box)')
     if form_count == 0:
@@ -75,7 +112,7 @@ if 'GuideScrollableDialogsV319' not in ms:
     ms = ms.replace('.setView(box)', '.setView(scrollableDialogContent(box))')
 
     mp.write_text(ms)
-    print(f'v3.19 MainActivity: wrapped {form_count} custom form dialogs and hardened MEDIA volume keys')
+    print(f'v3.19 MainActivity: wrapped {form_count} custom form dialogs; volume handler replaced={replaced_dispatch}')
 else:
     print('v3.19 MainActivity patch already applied')
 
@@ -85,12 +122,15 @@ ap = Path('app/src/main/java/com/guide/app/AlarmActivity.kt')
 asrc = ap.read_text()
 
 if 'GuideExplicitAlarmVolumeV319' not in asrc:
-    start = asrc.find('    override fun dispatchKeyEvent(event: KeyEvent): Boolean {')
-    end = asrc.find('    private fun buildUi(source: Intent): LinearLayout {', start)
-    if start < 0 or end < 0:
-        raise SystemExit('pattern not found: AlarmActivity dispatchKeyEvent')
+    if 'import android.media.AudioManager\n' not in asrc:
+        require(asrc, 'import android.graphics.drawable.GradientDrawable\n', 'AlarmActivity drawable import')
+        asrc = asrc.replace(
+            'import android.graphics.drawable.GradientDrawable\n',
+            'import android.graphics.drawable.GradientDrawable\nimport android.media.AudioManager\n',
+            1
+        )
 
-    dispatch = r'''    // GuideExplicitAlarmVolumeV319: volume keys only change STREAM_ALARM.
+    alarm_dispatch = r'''    // GuideExplicitAlarmVolumeV319: volume keys only change STREAM_ALARM.
     // They are consumed here so they can never dismiss the ringing screen or
     // stop GuideAlarmService playback.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -118,7 +158,14 @@ if 'GuideExplicitAlarmVolumeV319' not in asrc:
     }
 
 '''
-    asrc = asrc[:start] + dispatch + asrc[end:]
+    asrc, replaced_alarm_dispatch = replace_kotlin_function(
+        asrc,
+        '    override fun dispatchKeyEvent(event: KeyEvent): Boolean {',
+        alarm_dispatch
+    )
+    if not replaced_alarm_dispatch:
+        raise SystemExit('pattern not found: AlarmActivity dispatchKeyEvent')
+
     asrc = asrc.replace(
         'text = "ভলিউম বা Back বাটন চাপলেও অ্যালার্ম বন্ধ হবে"',
         'text = "ভলিউম বাটন অ্যালার্ম বন্ধ করবে না • বন্ধ করতে নিচের বাটন ব্যবহার করুন"',
