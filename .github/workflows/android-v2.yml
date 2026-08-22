@@ -120,6 +120,9 @@ jobs:
       - name: Apply Guide v3.28 expense groups, clear history and individual PDF
         run: python3 .github/scripts/v328_patch.py
 
+      - name: Apply Guide v3.29 History PDF feedback offline UX and dashboard
+        run: python3 .github/scripts/v329_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -169,13 +172,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.28 stable beta APK
+      - name: Build Guide 3.29 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.28 APK
+      - name: Upload Guide 3.29 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.28-stable-beta-apk
+          name: guide-v3.29-stable-beta-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
