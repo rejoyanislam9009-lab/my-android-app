@@ -74,6 +74,9 @@ jobs:
       - name: Apply Guide v3.10 media volume and image carousel patch
         run: python3 .github/scripts/v310_patch.py
 
+      - name: Apply Guide v3.11 interactive carousel and shine patch
+        run: python3 .github/scripts/v311_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -113,13 +116,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.10 stable beta APK
+      - name: Build Guide 3.11 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.10 APK
+      - name: Upload Guide 3.11 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.10-media-volume-image-carousel-apk
+          name: guide-v3.11-interactive-carousel-shine-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
