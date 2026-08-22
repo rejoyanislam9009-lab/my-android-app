@@ -1,0 +1,96 @@
+name: Build Guide v3.33 APK
+
+on:
+  push:
+    branches:
+      - feature/guide-v2
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-v333:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Apply Guide source patches through v3.33
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/scripts/v25_patch.py')
+          s = p.read_text()
+          start = "rep('        labels.addView(text(record.status, 15f,"
+          if start in s:
+              line_start = s.index(start)
+              line_end = s.index("\n", line_start)
+              s = s[:line_start] + "s = s.replace('labels.addView(text(record.status, 15f', 'labels.addView(text(statusBn(record.status), 15f', 1)" + s[line_end:]
+              p.write_text(s)
+          PY
+          python3 .github/scripts/v25_patch.py
+          for s in v27_patch.py v28_patch.py v29_patch.py v30_patch.py v31_patch.py v32_patch.py v33_patch.py v34_patch.py v35_patch.py v36_patch.py v37_patch.py v38_patch.py v39_patch.py v310_patch.py v311_patch.py v312_patch.py v313_patch.py v313_compile_fix.py v314_patch.py v315_patch.py v316_patch.py v317_patch.py; do
+            python3 ".github/scripts/$s"
+          done
+          python3 .github/scripts/v318_patch.py || python3 .github/scripts/v318_recover.py
+          python3 .github/scripts/v318_compile_fix.py
+          for s in v319_patch.py v320_patch.py v320_compile_fix.py v321_patch.py v322_patch.py v323_patch.py v324_patch.py v324_compile_fix.py; do
+            python3 ".github/scripts/$s"
+          done
+          python3 .github/scripts/v325_prepare.py
+          python3 .github/scripts/v325_patch.py
+          python3 .github/scripts/v326_patch.py
+          python3 .github/scripts/v326_compile_fix.py
+          python3 .github/scripts/v327_patch.py
+          python3 .github/scripts/v328_patch.py
+          python3 .github/scripts/v329_patch.py || python3 .github/scripts/v329_recover.py
+          python3 .github/scripts/v330_patch.py
+          python3 .github/scripts/v331_patch.py
+          python3 .github/scripts/v331_compile_fix.py
+          python3 .github/scripts/v332_mega_generate.py
+          python3 .github/scripts/v332_patch.py
+          python3 .github/scripts/v332_compile_fix.py
+          python3 .github/scripts/v333_patch.py
+
+      - name: Download bundled adhan audio
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p app/src/main/res/raw
+          curl --fail --location --retry 3 --silent --show-error 'https://upload.wikimedia.org/wikipedia/commons/b/b0/Beautiful_adhan.ogg' --output app/src/main/res/raw/guide_adhan_beautiful.ogg
+          curl --fail --location --retry 3 --silent --show-error 'https://upload.wikimedia.org/wikipedia/commons/a/a9/Muslim_calling_to_prayer.ogg' --output app/src/main/res/raw/guide_adhan_clear.ogg
+          curl --fail --location --retry 3 --silent --show-error 'https://upload.wikimedia.org/wikipedia/commons/1/1f/Oraci%C3%B3n_Al-Azzan.ogg' --output app/src/main/res/raw/guide_adhan_short.ogg
+
+      - name: Prepare stable beta signing key
+        shell: bash
+        run: |
+          base64 -d .github/keys/guide-beta-keystore.b64 > "$RUNNER_TEMP/guide-beta.jks"
+          echo "GUIDE_BETA_KEYSTORE=$RUNNER_TEMP/guide-beta.jks" >> "$GITHUB_ENV"
+          echo "GUIDE_BETA_STORE_PASSWORD=guidebeta2026" >> "$GITHUB_ENV"
+          echo "GUIDE_BETA_KEY_ALIAS=guidebeta" >> "$GITHUB_ENV"
+          echo "GUIDE_BETA_KEY_PASSWORD=guidebeta2026" >> "$GITHUB_ENV"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build Guide 3.33 APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Upload Guide 3.33 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: guide-v3.33-responsive-fast-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
