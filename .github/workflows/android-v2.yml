@@ -95,6 +95,9 @@ jobs:
       - name: Apply Guide v3.16 premium sidebar backdrop patch
         run: python3 .github/scripts/v316_patch.py
 
+      - name: Apply Guide v3.17 Firebase profile avatar patch
+        run: python3 .github/scripts/v317_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -144,13 +147,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.16 stable beta APK
+      - name: Build Guide 3.17 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.16 APK
+      - name: Upload Guide 3.17 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.16-premium-sidebar-apk
+          name: guide-v3.17-account-photo-avatar-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
