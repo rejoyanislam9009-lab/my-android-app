@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 def require(text: str, needle: str, name: str) -> None:
@@ -148,18 +149,21 @@ else:
     print('v3.19 ReminderScheduler patch already applied')
 
 
-# Version metadata.
+# Version metadata. Previous recovery patches can leave a different numeric
+# versionCode while still producing the v3.18 app, so normalize the first app
+# version fields instead of depending on one exact prior number.
 bp = Path('app/build.gradle.kts')
 bs = bp.read_text()
-require(bs, 'versionCode = 31', 'v3.18 versionCode')
-require(bs, 'versionName = "3.18.0"', 'v3.18 versionName')
-bs = bs.replace('versionCode = 31', 'versionCode = 32', 1)
-bs = bs.replace('versionName = "3.18.0"', 'versionName = "3.19.0"', 1)
+bs, code_count = re.subn(r'versionCode\s*=\s*\d+', 'versionCode = 32', bs, count=1)
+bs, name_count = re.subn(r'versionName\s*=\s*"[^"]+"', 'versionName = "3.19.0"', bs, count=1)
+if code_count != 1 or name_count != 1:
+    raise SystemExit('pattern not found: app version metadata')
 bp.write_text(bs)
 
 cp = Path('app/src/main/java/com/guide/app/CloudSyncManager.kt')
 cs = cp.read_text()
-require(cs, '"appVersion" to "3.18.0"', 'v3.18 cloud appVersion')
-cs = cs.replace('"appVersion" to "3.18.0"', '"appVersion" to "3.19.0"', 1)
+cs, cloud_count = re.subn(r'"appVersion"\s+to\s+"[^"]+"', '"appVersion" to "3.19.0"', cs, count=1)
+if cloud_count != 1:
+    raise SystemExit('pattern not found: cloud appVersion')
 cp.write_text(cs)
 print('v3.19 version metadata applied')
