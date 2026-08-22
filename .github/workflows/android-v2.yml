@@ -124,6 +124,9 @@ jobs:
         shell: bash
         run: python3 .github/scripts/v329_patch.py || python3 .github/scripts/v329_recover.py
 
+      - name: Apply Guide v3.30 Saudi Arabic learning center
+        run: python3 .github/scripts/v330_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -173,13 +176,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.29 stable beta APK
+      - name: Build Guide 3.30 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.29 APK
+      - name: Upload Guide 3.30 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.29-stable-beta-apk
+          name: guide-v3.30-stable-beta-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
