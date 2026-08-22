@@ -104,6 +104,9 @@ jobs:
           python3 .github/scripts/v318_patch.py || python3 .github/scripts/v318_recover.py
           python3 .github/scripts/v318_compile_fix.py
 
+      - name: Apply Guide v3.19 scroll volume and alarm icon fixes
+        run: python3 .github/scripts/v319_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -153,13 +156,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.18 stable beta APK
+      - name: Build Guide 3.19 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.18 APK
+      - name: Upload Guide 3.19 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.18-reliable-alarm-bengali-audio-apk
+          name: guide-v3.19-scroll-volume-alarm-icon-fix-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
