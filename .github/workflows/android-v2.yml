@@ -99,7 +99,9 @@ jobs:
         run: python3 .github/scripts/v317_patch.py
 
       - name: Apply Guide v3.18 reliable alarms and Bengali audio UX patch
-        run: python3 .github/scripts/v318_patch.py
+        shell: bash
+        run: |
+          python3 .github/scripts/v318_patch.py || python3 .github/scripts/v318_recover.py
 
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
