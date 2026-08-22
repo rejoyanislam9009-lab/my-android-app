@@ -12,7 +12,20 @@
           "package_name": "com.guide.app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "512749667590-uiis1to4ja6gl33sa916ful2ji9jt5hm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.guide.app",
+            "certificate_hash": "e6d3d01c77437723dea909690d80843c7695c15c"
+          }
+        },
+        {
+          "client_id": "512749667590-47rv6a7gai9mjdod1bhrk4aljvp0d82t.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE"
@@ -20,7 +33,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "512749667590-47rv6a7gai9mjdod1bhrk4aljvp0d82t.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
