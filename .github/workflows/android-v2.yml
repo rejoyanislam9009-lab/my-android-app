@@ -80,6 +80,9 @@ jobs:
       - name: Apply Guide v3.12 swipe and contextual voice reminder patch
         run: python3 .github/scripts/v312_patch.py
 
+      - name: Apply Guide v3.13 responsive sidebar and dashboard polish patch
+        run: python3 .github/scripts/v313_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -119,13 +122,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.12 stable beta APK
+      - name: Build Guide 3.13 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.12 APK
+      - name: Upload Guide 3.13 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.12-swipe-contextual-voice-apk
+          name: guide-v3.13-premium-responsive-dashboard-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
