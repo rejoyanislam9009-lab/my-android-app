@@ -1,4 +1,4 @@
-name: Build Guide v3.25 APK
+name: Build Guide v3.26 APK
 
 on:
   push:
@@ -10,13 +10,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-v325:
+  build-v326:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Apply Guide source patches through v3.25
+      - name: Apply Guide source patches through v3.26
         shell: bash
         run: |
           set -euo pipefail
@@ -42,6 +42,7 @@ jobs:
           done
           python3 .github/scripts/v325_prepare.py
           python3 .github/scripts/v325_patch.py
+          python3 .github/scripts/v326_patch.py
 
       - name: Download bundled adhan audio
         shell: bash
@@ -72,13 +73,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.25 APK
+      - name: Build Guide 3.26 APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.25 APK
+      - name: Upload Guide 3.26 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.25-partial-payment-premium-pdf-apk
+          name: guide-v3.26-active-history-dropdown-pdf-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
