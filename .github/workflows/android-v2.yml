@@ -86,6 +86,9 @@ jobs:
       - name: Apply Guide v3.13 compile-scope fix
         run: python3 .github/scripts/v313_compile_fix.py
 
+      - name: Apply Guide v3.14 fixed-width rainbow gradient border patch
+        run: python3 .github/scripts/v314_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -125,13 +128,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.13 stable beta APK
+      - name: Build Guide 3.14 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.13 APK
+      - name: Upload Guide 3.14 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.13-premium-responsive-dashboard-apk
+          name: guide-v3.14-rainbow-gradient-border-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
