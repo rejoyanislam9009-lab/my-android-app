@@ -34,67 +34,46 @@ jobs:
 
       - name: Apply Guide v2.7 auth and sidebar patch
         run: python3 .github/scripts/v27_patch.py
-
       - name: Apply Guide v2.8 dashboard banner patch
         run: python3 .github/scripts/v28_patch.py
-
       - name: Apply Guide v2.9 daily life patch
         run: python3 .github/scripts/v29_patch.py
-
       - name: Apply Guide v3.0 guest and login UX patch
         run: python3 .github/scripts/v30_patch.py
-
       - name: Apply Guide v3.1 attendance wage patch
         run: python3 .github/scripts/v31_patch.py
-
       - name: Apply Guide v3.2 opt-in reminder patch
         run: python3 .github/scripts/v32_patch.py
-
       - name: Apply Guide v3.3 reset quick controls and pull refresh patch
         run: python3 .github/scripts/v33_patch.py
-
       - name: Apply Guide v3.4 alarm indicator and layout fixes
         run: python3 .github/scripts/v34_patch.py
-
       - name: Apply Guide v3.5 one-shot alarm repeat controls
         run: python3 .github/scripts/v35_patch.py
-
       - name: Apply Guide v3.6 bundled adhan ringtone patch
         run: python3 .github/scripts/v36_patch.py
-
       - name: Apply Guide v3.7 ringtone preview patch
         run: python3 .github/scripts/v37_patch.py
-
       - name: Apply Guide v3.8 media-routed preview patch
         run: python3 .github/scripts/v38_patch.py
-
       - name: Apply Guide v3.9 premium 3D UI patch
         run: python3 .github/scripts/v39_patch.py
-
       - name: Apply Guide v3.10 media volume and image carousel patch
         run: python3 .github/scripts/v310_patch.py
-
       - name: Apply Guide v3.11 interactive carousel and shine patch
         run: python3 .github/scripts/v311_patch.py
-
       - name: Apply Guide v3.12 swipe and contextual voice reminder patch
         run: python3 .github/scripts/v312_patch.py
-
       - name: Apply Guide v3.13 responsive sidebar and dashboard polish patch
         run: python3 .github/scripts/v313_patch.py
-
       - name: Apply Guide v3.13 compile-scope fix
         run: python3 .github/scripts/v313_compile_fix.py
-
       - name: Apply Guide v3.14 fixed-width rainbow gradient border patch
         run: python3 .github/scripts/v314_patch.py
-
       - name: Apply Guide v3.15 login UX Google auth and missing border patch
         run: python3 .github/scripts/v315_patch.py
-
       - name: Apply Guide v3.16 premium sidebar backdrop patch
         run: python3 .github/scripts/v316_patch.py
-
       - name: Apply Guide v3.17 Firebase profile avatar patch
         run: python3 .github/scripts/v317_patch.py
 
@@ -106,19 +85,14 @@ jobs:
 
       - name: Apply Guide v3.19 scroll volume and alarm icon fixes
         run: python3 .github/scripts/v319_patch.py
-
       - name: Apply Guide v3.20 next alarm controls and notification actions
         run: python3 .github/scripts/v320_patch.py
-
       - name: Apply Guide v3.20 receiver scope compile fix
         run: python3 .github/scripts/v320_compile_fix.py
-
       - name: Apply Guide v3.21 finance center and Room/Mess accounting
         run: python3 .github/scripts/v321_patch.py
-
       - name: Apply Guide v3.22 Room/Mess paid status and fair rent splitting
         run: python3 .github/scripts/v322_patch.py
-
       - name: Apply Guide v3.23 separated Rent Mess and member completion UI
         run: python3 .github/scripts/v323_patch.py
 
@@ -133,6 +107,12 @@ jobs:
         run: |
           python3 .github/scripts/v325_prepare.py
           python3 .github/scripts/v325_patch.py
+
+      - name: Apply Guide v3.26 active cycle history and month PDF
+        shell: bash
+        run: |
+          python3 .github/scripts/v326_patch.py
+          python3 .github/scripts/v326_compile_fix.py
 
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
@@ -183,13 +163,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.25 stable beta APK
+      - name: Build Guide 3.26 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.25 APK
+      - name: Upload Guide 3.26 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.25-stable-beta-apk
+          name: guide-v3.26-stable-beta-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
