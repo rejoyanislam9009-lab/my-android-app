@@ -68,6 +68,9 @@ jobs:
       - name: Apply Guide v3.8 media-routed preview patch
         run: python3 .github/scripts/v38_patch.py
 
+      - name: Apply Guide v3.9 premium 3D UI patch
+        run: python3 .github/scripts/v39_patch.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
@@ -107,13 +110,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.8 stable beta APK
+      - name: Build Guide 3.9 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.8 APK
+      - name: Upload Guide 3.9 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.8-media-routed-preview-apk
+          name: guide-v3.9-premium-3d-ui-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
