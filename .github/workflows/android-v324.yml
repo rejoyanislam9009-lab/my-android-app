@@ -37,9 +37,11 @@ jobs:
           done
           python3 .github/scripts/v318_patch.py || python3 .github/scripts/v318_recover.py
           python3 .github/scripts/v318_compile_fix.py
-          for s in v319_patch.py v320_patch.py v320_compile_fix.py v321_patch.py v322_patch.py v323_patch.py v324_patch.py v324_compile_fix.py v325_patch.py; do
+          for s in v319_patch.py v320_patch.py v320_compile_fix.py v321_patch.py v322_patch.py v323_patch.py v324_patch.py v324_compile_fix.py; do
             python3 ".github/scripts/$s"
           done
+          python3 .github/scripts/v325_prepare.py
+          python3 .github/scripts/v325_patch.py
 
       - name: Download bundled adhan audio
         shell: bash
