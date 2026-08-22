@@ -52,6 +52,7 @@ jobs:
           python3 .github/scripts/v331_compile_fix.py
           python3 .github/scripts/v332_mega_generate.py
           python3 .github/scripts/v332_patch.py
+          python3 .github/scripts/v332_compile_fix.py
 
       - name: Download bundled adhan audio
         shell: bash
