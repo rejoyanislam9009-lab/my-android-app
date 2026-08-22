@@ -110,6 +110,9 @@ jobs:
       - name: Apply Guide v3.20 next alarm controls and notification actions
         run: python3 .github/scripts/v320_patch.py
 
+      - name: Apply Guide v3.20 receiver scope compile fix
+        run: python3 .github/scripts/v320_compile_fix.py
+
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
         run: |
