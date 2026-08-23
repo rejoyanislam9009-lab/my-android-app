@@ -26,6 +26,16 @@ def function_bounds(text: str, signature: str):
     return start, end
 
 
+# The v3.38 screen is stored directly in the branch. Keep the build copy
+# self-contained even if the source file was created before this import existed.
+sp = Path('app/src/main/java/com/guide/app/SmartExpenseActivity.kt')
+if sp.exists():
+    ss = sp.read_text()
+    if 'import androidx.appcompat.app.AlertDialog' not in ss:
+        ss = ss.replace('import androidx.appcompat.app.AppCompatActivity\n', 'import androidx.appcompat.app.AlertDialog\nimport androidx.appcompat.app.AppCompatActivity\n', 1)
+        sp.write_text(ss)
+        print('v3.38 SmartExpenseActivity AlertDialog import applied')
+
 mp = Path('app/src/main/java/com/guide/app/MainActivity.kt')
 ms = mp.read_text()
 
