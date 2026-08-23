@@ -1,4 +1,4 @@
-name: Build Guide v3.34 APK
+name: Build Guide v3.35 APK
 
 on:
   push:
@@ -10,13 +10,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-v334:
+  build-v335:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Apply Guide source patches through v3.34
+      - name: Apply Guide source patches through v3.35
         shell: bash
         run: |
           set -euo pipefail
@@ -55,6 +55,7 @@ jobs:
           python3 .github/scripts/v332_compile_fix.py
           python3 .github/scripts/v333_patch.py
           python3 .github/scripts/v334_patch.py
+          python3 .github/scripts/v335_patch.py
 
       - name: Download bundled adhan audio
         shell: bash
@@ -85,13 +86,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.34 APK
+      - name: Build Guide 3.35 APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.34 APK
+      - name: Upload Guide 3.35 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.34-islamic-audio-center-apk
+          name: guide-v3.35-built-in-waz-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
