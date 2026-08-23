@@ -116,16 +116,36 @@ jobs:
 
       - name: Apply Guide v3.27 visible member controls and sidebar history
         run: python3 .github/scripts/v327_patch.py
-
-      - name: Apply Guide v3.28 expense groups, clear history and individual PDF
+      - name: Apply Guide v3.28 expense groups clear history and individual PDF
         run: python3 .github/scripts/v328_patch.py
-
       - name: Apply Guide v3.29 History PDF feedback offline UX and dashboard
         shell: bash
         run: python3 .github/scripts/v329_patch.py || python3 .github/scripts/v329_recover.py
-
       - name: Apply Guide v3.30 Saudi Arabic learning center
         run: python3 .github/scripts/v330_patch.py
+      - name: Apply Guide v3.31 Saudi Arabic A-Z conversation expansion
+        shell: bash
+        run: |
+          python3 .github/scripts/v331_patch.py
+          python3 .github/scripts/v331_compile_fix.py
+      - name: Apply Guide v3.32 Saudi Arabic mega library and anchor scroll fix
+        shell: bash
+        run: |
+          python3 .github/scripts/v332_mega_generate.py
+          python3 .github/scripts/v332_patch.py
+          python3 .github/scripts/v332_compile_fix.py
+      - name: Apply Guide v3.33 responsive fast UI patch
+        run: python3 .github/scripts/v333_patch.py
+      - name: Apply Guide v3.34 Islamic Audio Center
+        run: python3 .github/scripts/v334_patch.py
+      - name: Apply Guide v3.35 built-in Waz library
+        run: python3 .github/scripts/v335_patch.py
+      - name: Apply Guide v3.36 reversible completion and payment corrections
+        run: python3 .github/scripts/v336_patch.py
+      - name: Apply Guide v3.37 offline Islamic audio downloads
+        run: python3 .github/scripts/v337_patch.py
+      - name: Apply Guide v3.38 Smart expense note calculator
+        run: python3 .github/scripts/v338_patch.py
 
       - name: Download CC0 and public-domain bundled adhan audio
         shell: bash
@@ -176,13 +196,13 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build Guide 3.30 stable beta APK
+      - name: Build Guide 3.38 stable beta APK
         run: gradle --no-daemon assembleDebug
 
-      - name: Upload Guide 3.30 APK
+      - name: Upload Guide 3.38 APK
         uses: actions/upload-artifact@v4
         with:
-          name: guide-v3.30-stable-beta-apk
+          name: guide-v3.38-stable-beta-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
