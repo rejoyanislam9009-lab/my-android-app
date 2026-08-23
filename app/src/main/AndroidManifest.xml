@@ -30,6 +30,7 @@
 
         <activity android:name=".BackupActivity" android:exported="false" />
         <activity android:name=".PdfReportsActivity" android:exported="false" />
+        <activity android:name=".SmartExpenseActivity" android:exported="false" />
 
         <activity
             android:name=".MainActivity"
