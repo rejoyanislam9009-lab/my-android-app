@@ -12,11 +12,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
-import android.provider.Settings;
 import android.view.View;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
-import android.webkit.MimeTypeMap;
 import android.webkit.URLUtil;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -30,7 +28,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import java.net.URLConnection;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 
 public class MainActivity extends Activity {
     private static final int FILE_CHOOSER_REQUEST = 1001;
@@ -38,6 +36,7 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private ProgressBar progressBar;
+    private SwipeRefreshLayout swipeRefreshLayout;
     private View errorView;
     private TextView errorMessage;
     private ValueCallback<Uri[]> filePathCallback;
@@ -53,11 +52,13 @@ public class MainActivity extends Activity {
 
         webView = findViewById(R.id.webView);
         progressBar = findViewById(R.id.progressBar);
+        swipeRefreshLayout = findViewById(R.id.swipeRefreshLayout);
         errorView = findViewById(R.id.errorView);
         errorMessage = findViewById(R.id.errorMessage);
         Button retryButton = findViewById(R.id.retryButton);
 
         configureWebView();
+        configurePullToRefresh();
         retryButton.setOnClickListener(v -> retry());
 
         if (savedInstanceState == null) {
@@ -75,6 +76,35 @@ public class MainActivity extends Activity {
         Uri uri = Uri.parse(BuildConfig.WEBVIEW_URL);
         return "https".equalsIgnoreCase(uri.getScheme()) && uri.getHost() != null
                 && !"example.com".equalsIgnoreCase(uri.getHost());
+    }
+
+    private void configurePullToRefresh() {
+        swipeRefreshLayout.setColorSchemeResources(R.color.brand);
+        swipeRefreshLayout.setProgressBackgroundColorSchemeResource(R.color.background);
+        swipeRefreshLayout.setDistanceToTriggerSync(dpToPx(88));
+        swipeRefreshLayout.setOnChildScrollUpCallback(
+                (parent, child) -> webView != null && webView.canScrollVertically(-1)
+        );
+        swipeRefreshLayout.setOnRefreshListener(this::refreshCurrentPage);
+    }
+
+    private int dpToPx(int dp) {
+        return Math.round(dp * getResources().getDisplayMetrics().density);
+    }
+
+    private void refreshCurrentPage() {
+        if (!isConfiguredUrlValid()) {
+            swipeRefreshLayout.setRefreshing(false);
+            showError(getString(R.string.url_not_configured));
+            return;
+        }
+
+        hideError();
+        if (webView.getUrl() == null) {
+            webView.loadUrl(BuildConfig.WEBVIEW_URL);
+        } else {
+            webView.reload();
+        }
     }
 
     private void configureWebView() {
@@ -183,6 +213,9 @@ public class MainActivity extends Activity {
     }
 
     private void showError(String message) {
+        if (swipeRefreshLayout != null) {
+            swipeRefreshLayout.setRefreshing(false);
+        }
         errorMessage.setText(message);
         errorView.setVisibility(View.VISIBLE);
         webView.setVisibility(View.INVISIBLE);
@@ -244,6 +277,7 @@ public class MainActivity extends Activity {
         @Override
         public void onPageFinished(WebView view, String url) {
             progressBar.setVisibility(View.GONE);
+            swipeRefreshLayout.setRefreshing(false);
             super.onPageFinished(view, url);
         }
 
@@ -261,6 +295,9 @@ public class MainActivity extends Activity {
         public void onProgressChanged(WebView view, int newProgress) {
             progressBar.setProgress(newProgress);
             progressBar.setVisibility(newProgress >= 100 ? View.GONE : View.VISIBLE);
+            if (newProgress >= 100 && swipeRefreshLayout != null) {
+                swipeRefreshLayout.setRefreshing(false);
+            }
             super.onProgressChanged(view, newProgress);
         }
 
@@ -328,6 +365,9 @@ public class MainActivity extends Activity {
         if (filePathCallback != null) {
             filePathCallback.onReceiveValue(null);
             filePathCallback = null;
+        }
+        if (swipeRefreshLayout != null) {
+            swipeRefreshLayout.setRefreshing(false);
         }
         if (webView != null) {
             webView.stopLoading();
