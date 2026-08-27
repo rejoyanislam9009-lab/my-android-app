@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Website App</string>
-    <string name="offline_title">Can’t open the website</string>
+    <string name="app_name">Vipvison</string>
+    <string name="offline_title">Can’t open Vipvison</string>
     <string name="page_load_failed">Check your internet connection and try again.</string>
     <string name="url_not_configured">The website URL has not been configured yet.</string>
     <string name="retry">Try again</string>
