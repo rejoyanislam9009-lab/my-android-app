@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Website App</string>
+    <string name="offline_title">Can’t open the website</string>
+    <string name="page_load_failed">Check your internet connection and try again.</string>
+    <string name="url_not_configured">The website URL has not been configured yet.</string>
+    <string name="retry">Try again</string>
+    <string name="downloading">Downloading file…</string>
+    <string name="download_started">Download started</string>
+    <string name="download_failed">Could not start the download</string>
+    <string name="download_permission_denied">Storage permission is required to save this download on older Android versions.</string>
+    <string name="file_picker_unavailable">No file picker is available on this device.</string>
+    <string name="no_app_for_link">No compatible app is installed for this link.</string>
+</resources>

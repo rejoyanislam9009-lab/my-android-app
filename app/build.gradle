@@ -1,0 +1,39 @@
+plugins {
+    id 'com.android.application'
+}
+
+def configuredWebViewUrl = project.findProperty('WEBVIEW_URL') ?: 'https://example.com'
+
+android {
+    namespace 'com.rejoy.webviewapp'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.rejoy.webviewapp'
+        minSdk 23
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0'
+
+        buildConfigField 'String', 'WEBVIEW_URL', '"' + configuredWebViewUrl + '"'
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+}
