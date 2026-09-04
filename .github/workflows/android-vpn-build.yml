@@ -15,6 +15,22 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      BD_VPN_1_NAME: ${{ secrets.BD_VPN_1_NAME }}
+      BD_VPN_1_ENDPOINT: ${{ secrets.BD_VPN_1_ENDPOINT }}
+      BD_VPN_1_SERVER_PUBLIC_KEY: ${{ secrets.BD_VPN_1_SERVER_PUBLIC_KEY }}
+      BD_VPN_1_CLIENT_PRIVATE_KEY: ${{ secrets.BD_VPN_1_CLIENT_PRIVATE_KEY }}
+      BD_VPN_1_CLIENT_ADDRESS: ${{ secrets.BD_VPN_1_CLIENT_ADDRESS }}
+      BD_VPN_2_NAME: ${{ secrets.BD_VPN_2_NAME }}
+      BD_VPN_2_ENDPOINT: ${{ secrets.BD_VPN_2_ENDPOINT }}
+      BD_VPN_2_SERVER_PUBLIC_KEY: ${{ secrets.BD_VPN_2_SERVER_PUBLIC_KEY }}
+      BD_VPN_2_CLIENT_PRIVATE_KEY: ${{ secrets.BD_VPN_2_CLIENT_PRIVATE_KEY }}
+      BD_VPN_2_CLIENT_ADDRESS: ${{ secrets.BD_VPN_2_CLIENT_ADDRESS }}
+      BD_VPN_3_NAME: ${{ secrets.BD_VPN_3_NAME }}
+      BD_VPN_3_ENDPOINT: ${{ secrets.BD_VPN_3_ENDPOINT }}
+      BD_VPN_3_SERVER_PUBLIC_KEY: ${{ secrets.BD_VPN_3_SERVER_PUBLIC_KEY }}
+      BD_VPN_3_CLIENT_PRIVATE_KEY: ${{ secrets.BD_VPN_3_CLIENT_PRIVATE_KEY }}
+      BD_VPN_3_CLIENT_ADDRESS: ${{ secrets.BD_VPN_3_CLIENT_ADDRESS }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
