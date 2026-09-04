@@ -6,8 +6,11 @@ service cloud.firestore {
     }
 
     function isParticipant(data) {
-      return signedIn() &&
-        (data.callerUid == request.auth.uid || data.calleeUid == request.auth.uid);
+      return signedIn() && (
+        data.callerUid == request.auth.uid
+        || data.calleeUid == request.auth.uid
+        || (data.participantUids is list && request.auth.uid in data.participantUids)
+      );
     }
 
     match /users/{uid} {
