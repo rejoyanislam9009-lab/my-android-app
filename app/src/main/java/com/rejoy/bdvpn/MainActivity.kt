@@ -2,19 +2,18 @@ package com.rejoy.bdvpn
 
 import android.app.Activity
 import android.content.Intent
-import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.net.VpnService
 import android.os.Bundle
-import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.concurrent.thread
@@ -25,17 +24,12 @@ class MainActivity : Activity() {
         private const val VPN_PERMISSION_REQUEST = 4101
     }
 
-    private val serverProfile = ServerProfiles.BANGLADESH_PRIMARY
     private lateinit var controller: VpnTunnelController
-    private lateinit var privateKey: EditText
-    private lateinit var address: EditText
-    private lateinit var dns: EditText
-    private lateinit var peerPublicKey: EditText
-    private lateinit var endpoint: EditText
-    private lateinit var allowedIps: EditText
+    private lateinit var serverSpinner: Spinner
     private lateinit var status: TextView
 
     private var pendingConfig: String? = null
+    private var pendingProfile: VpnServerProfile? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,7 +65,7 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER
         })
         header.addView(TextView(this).apply {
-            text = "Secure Bangladesh WireGuard tunnel"
+            text = "Select a Bangladesh server and connect"
             textSize = 15f
             setTextColor(Color.rgb(226, 245, 237))
             gravity = Gravity.CENTER
@@ -85,35 +79,46 @@ class MainActivity : Activity() {
             background = roundedBackground(Color.WHITE, cardRadius)
             elevation = 4 * density
         }
-        (serverCard.layoutParams as? ViewGroup.MarginLayoutParams)?.topMargin = smallGap
         serverCard.addView(TextView(this).apply {
-            text = "🇧🇩 ${serverProfile.name}"
+            text = "🇧🇩 Choose server"
             textSize = 20f
             setTypeface(typeface, Typeface.BOLD)
             setTextColor(Color.rgb(20, 53, 44))
         })
         serverCard.addView(TextView(this).apply {
-            text = "Authorized Bangladesh-hosted server profile"
+            text = "Your server credentials are preconfigured in the build. No manual key or endpoint entry is required."
             textSize = 13f
             setTextColor(Color.DKGRAY)
             setPadding(0, smallGap / 2, 0, smallGap)
         })
 
-        privateKey = field("Client private key", "", true)
-        address = field("Client address (CIDR)", "10.8.0.2/32")
-        dns = field("DNS", serverProfile.dns)
-        peerPublicKey = field("Bangladesh server public key", "")
-        endpoint = field("Bangladesh server endpoint host:port", serverProfile.endpoint)
-        allowedIps = field("Allowed IPs", serverProfile.allowedIps)
-
-        listOf(privateKey, address, dns, peerPublicKey, endpoint, allowedIps).forEach {
-            serverCard.addView(it)
+        serverSpinner = Spinner(this).apply {
+            val labels = ServerProfiles.all.map { it.displayName }
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_item,
+                labels
+            ).also {
+                it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+            setPadding(smallGap, smallGap, smallGap, smallGap)
+            background = roundedBackground(Color.rgb(235, 244, 240), 14 * density)
         }
+        serverCard.addView(
+            serverSpinner,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        )
 
-        container.addView(serverCard, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = smallGap })
+        container.addView(
+            serverCard,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = smallGap }
+        )
 
         val connect = actionButton("CONNECT", Color.rgb(8, 107, 76)).apply {
             setOnClickListener { requestConnect() }
@@ -122,14 +127,20 @@ class MainActivity : Activity() {
             setOnClickListener { disconnectTunnel() }
         }
 
-        container.addView(connect, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = smallGap * 2 })
-        container.addView(disconnect, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = smallGap })
+        container.addView(
+            connect,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = smallGap * 2 }
+        )
+        container.addView(
+            disconnect,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = smallGap }
+        )
 
         status = TextView(this).apply {
             textSize = 16f
@@ -137,13 +148,16 @@ class MainActivity : Activity() {
             setPadding(padding, padding, padding, padding)
             background = roundedBackground(Color.WHITE, cardRadius)
         }
-        container.addView(status, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = smallGap })
+        container.addView(
+            status,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = smallGap }
+        )
 
         container.addView(TextView(this).apply {
-            text = "Use only a server you own or are authorized to use. This app does not override a financial service's KYC, fraud-prevention, or access policies."
+            text = "Use only servers you own or are authorized to use. Availability of third-party financial services still depends on their own KYC, anti-fraud, VPN, and access policies."
             textSize = 12f
             setTextColor(Color.GRAY)
             setPadding(4, smallGap, 4, 0)
@@ -157,22 +171,6 @@ class MainActivity : Activity() {
                     ViewGroup.LayoutParams.WRAP_CONTENT
                 )
             )
-        }
-    }
-
-    private fun field(hintText: String, value: String, password: Boolean = false): EditText {
-        return EditText(this).apply {
-            hint = hintText
-            setText(value)
-            setSingleLine(true)
-            setTextColor(Color.rgb(28, 42, 37))
-            setHintTextColor(Color.rgb(120, 128, 124))
-            backgroundTintList = ColorStateList.valueOf(Color.rgb(8, 107, 76))
-            inputType = if (password) {
-                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-            } else {
-                InputType.TYPE_CLASS_TEXT
-            }
         }
     }
 
@@ -197,15 +195,26 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun selectedProfile(): VpnServerProfile {
+        val index = serverSpinner.selectedItemPosition.coerceIn(0, ServerProfiles.all.lastIndex)
+        return ServerProfiles.all[index]
+    }
+
     private fun requestConnect() {
-        val config = try {
-            buildWireGuardConfig()
-        } catch (e: IllegalArgumentException) {
-            Toast.makeText(this, e.message ?: "Invalid configuration", Toast.LENGTH_LONG).show()
+        val profile = selectedProfile()
+        if (!profile.isConfigured) {
+            status.text = "${profile.name}: server setup pending"
+            Toast.makeText(
+                this,
+                "${profile.name} is not provisioned in this build yet.",
+                Toast.LENGTH_LONG
+            ).show()
             return
         }
 
-        pendingConfig = config
+        pendingProfile = profile
+        pendingConfig = buildWireGuardConfig(profile)
+
         val permissionIntent = VpnService.prepare(this)
         if (permissionIntent != null) {
             startActivityForResult(permissionIntent, VPN_PERMISSION_REQUEST)
@@ -222,6 +231,7 @@ class MainActivity : Activity() {
                 connectPendingConfig()
             } else {
                 pendingConfig = null
+                pendingProfile = null
                 status.text = "VPN permission was not granted."
             }
         }
@@ -229,13 +239,14 @@ class MainActivity : Activity() {
 
     private fun connectPendingConfig() {
         val config = pendingConfig ?: return
-        status.text = "Connecting to ${serverProfile.name}..."
+        val profile = pendingProfile ?: selectedProfile()
+        status.text = "Connecting to ${profile.name}..."
 
         thread {
             try {
                 val newState = controller.connect(config)
                 runOnUiThread {
-                    status.text = "${serverProfile.name}: ${newState.name}"
+                    status.text = "${profile.name}: ${newState.name}"
                 }
             } catch (e: Exception) {
                 runOnUiThread {
@@ -243,6 +254,7 @@ class MainActivity : Activity() {
                 }
             } finally {
                 pendingConfig = null
+                pendingProfile = null
             }
         }
     }
@@ -272,32 +284,20 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun buildWireGuardConfig(): String {
-        val privateKeyValue = required(privateKey, "Client private key")
-        val addressValue = required(address, "Client address")
-        val peerPublicKeyValue = required(peerPublicKey, "Bangladesh server public key")
-        val endpointValue = required(endpoint, "Bangladesh server endpoint")
-        val allowedIpsValue = required(allowedIps, "Allowed IPs")
-        val dnsValue = dns.text.toString().trim()
-
+    private fun buildWireGuardConfig(profile: VpnServerProfile): String {
         return buildString {
             appendLine("[Interface]")
-            appendLine("PrivateKey = $privateKeyValue")
-            appendLine("Address = $addressValue")
-            if (dnsValue.isNotEmpty()) {
-                appendLine("DNS = $dnsValue")
+            appendLine("PrivateKey = ${profile.clientPrivateKey}")
+            appendLine("Address = ${profile.clientAddress}")
+            if (profile.dns.isNotBlank()) {
+                appendLine("DNS = ${profile.dns}")
             }
             appendLine()
             appendLine("[Peer]")
-            appendLine("PublicKey = $peerPublicKeyValue")
-            appendLine("Endpoint = $endpointValue")
-            appendLine("AllowedIPs = $allowedIpsValue")
-            appendLine("PersistentKeepalive = ${serverProfile.persistentKeepaliveSeconds}")
+            appendLine("PublicKey = ${profile.serverPublicKey}")
+            appendLine("Endpoint = ${profile.endpoint}")
+            appendLine("AllowedIPs = ${profile.allowedIps}")
+            appendLine("PersistentKeepalive = ${profile.persistentKeepaliveSeconds}")
         }
-    }
-
-    private fun required(field: EditText, label: String): String {
-        return field.text.toString().trim().takeIf { it.isNotEmpty() }
-            ?: throw IllegalArgumentException("$label is required")
     }
 }
