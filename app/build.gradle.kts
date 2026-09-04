@@ -6,7 +6,7 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
-// Google Services is applied only when the real Firebase configuration exists.
+// Google Services is applied only when a package-matching Firebase config exists.
 if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
@@ -19,10 +19,17 @@ android {
         applicationId = "com.globalcall.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
 
-        buildConfigField("String", "API_BASE_URL", "\"https://YOUR_DOMAIN.example\"")
+        // Public Firebase client configuration reused from the repository's existing
+        // guide-c4c2c project. Firebase Android client keys are not server secrets.
+        buildConfigField("String", "FIREBASE_API_KEY", "\"AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE\"")
+        buildConfigField("String", "FIREBASE_PROJECT_ID", "\"guide-c4c2c\"")
+        buildConfigField("String", "FIREBASE_APP_ID", "\"1:512749667590:android:cbd98fa7db7988e523ca87\"")
+        buildConfigField("String", "FIREBASE_SENDER_ID", "\"512749667590\"")
+        buildConfigField("String", "FIREBASE_STORAGE_BUCKET", "\"guide-c4c2c.firebasestorage.app\"")
+        buildConfigField("String", "MEETING_BASE_URL", "\"https://meet.jit.si\"")
     }
 
     buildFeatures {
@@ -67,7 +74,4 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging")
     implementation("com.google.firebase:firebase-crashlytics")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
-
-    implementation("io.livekit:livekit-android:2.28.0")
-    implementation("io.livekit:livekit-android-camerax:2.28.0")
 }
