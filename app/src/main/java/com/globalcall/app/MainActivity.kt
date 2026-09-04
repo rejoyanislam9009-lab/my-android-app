@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
     companion object {
         const val EXTRA_CALL_ID = "globalcall_call_id"
         const val EXTRA_CALL_ACTION = "globalcall_call_action"
+        const val ACTION_SHOW_INCOMING = "show_incoming"
         const val ACTION_ANSWER = "answer"
     }
 }
