@@ -16,6 +16,7 @@ import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.model.CallSession
 import com.globalcall.app.ui.AuthScreen
 import com.globalcall.app.ui.CallScreen
+import com.globalcall.app.ui.GuestReadyScreen
 import com.globalcall.app.ui.ReadyHomeScreen
 import com.globalcall.app.ui.theme.GlobalCallTheme
 import com.google.firebase.FirebaseApp
@@ -98,28 +99,37 @@ private fun GlobalCallApp(
     }
     val scope = rememberCoroutineScope()
     var currentUser by remember { mutableStateOf(auth.currentUser) }
+    var guestMode by remember { mutableStateOf(false) }
     var callSession by remember { mutableStateOf<CallSession?>(null) }
 
     DisposableEffect(auth) {
-        val listener = FirebaseAuth.AuthStateListener { currentUser = it.currentUser }
+        val listener = FirebaseAuth.AuthStateListener {
+            currentUser = it.currentUser
+            if (it.currentUser != null) guestMode = false
+        }
         auth.addAuthStateListener(listener)
         onDispose { auth.removeAuthStateListener(listener) }
     }
 
     when {
-        currentUser == null -> AuthScreen(auth)
-
         callSession != null -> CallScreen(
             session = requireNotNull(callSession),
             repository = repository,
             onFinish = { updateServer ->
                 val callId = callSession?.callId
                 callSession = null
-                if (updateServer && callId != null && !callId.startsWith("instant-")) {
+                if (updateServer && currentUser != null && callId != null && !callId.startsWith("instant-")) {
                     scope.launch { repository.endCall(callId) }
                 }
             }
         )
+
+        currentUser == null && guestMode -> GuestReadyScreen(
+            onJoinCall = { callSession = it },
+            onSignIn = { guestMode = false }
+        )
+
+        currentUser == null -> AuthScreen(auth, onGuest = { guestMode = true })
 
         else -> ReadyHomeScreen(
             auth = auth,
