@@ -19,12 +19,12 @@ android {
         applicationId = "com.globalcall.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
 
         // Public Firebase client configuration reused from the repository's existing
-        // guide-c4c2c project. Firebase Android client keys are not server secrets.
-        // Cloud mode initializes these lazily only after the user explicitly opens it.
+        // guide-c4c2c project. Cloud mode initializes these lazily only after the user
+        // explicitly opens it; instant room calls remain independent from Firebase.
         buildConfigField("String", "FIREBASE_API_KEY", "\"AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"guide-c4c2c\"")
         buildConfigField("String", "FIREBASE_APP_ID", "\"1:512749667590:android:cbd98fa7db7988e523ca87\"")
