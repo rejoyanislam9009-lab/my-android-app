@@ -19,7 +19,8 @@ data class CallInvite(
     val calleeUid: String,
     val calleeName: String,
     val status: String,
-    val video: Boolean = true
+    val video: Boolean = true,
+    val roomName: String = ""
 )
 
 data class CallRecord(
