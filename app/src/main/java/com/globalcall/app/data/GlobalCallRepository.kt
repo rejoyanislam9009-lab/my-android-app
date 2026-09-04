@@ -29,27 +29,26 @@ class GlobalCallRepository(
     fun observePeople(
         onChange: (List<AppUser>) -> Unit,
         onError: (Throwable) -> Unit
-    ): ListenerRegistration = db.collection("users")
-        .addSnapshotListener { snapshot, error ->
-            if (error != null) {
-                onError(error)
-                return@addSnapshotListener
-            }
-            val me = currentUid
-            val users = snapshot?.documents.orEmpty().mapNotNull { doc ->
-                val uid = doc.getString("uid") ?: doc.id
-                if (uid == me) null else AppUser(
-                    uid = uid,
-                    displayName = doc.getString("displayName").orEmpty(),
-                    email = doc.getString("email").orEmpty(),
-                    bio = doc.getString("bio").orEmpty(),
-                    photoUrl = doc.getString("photoUrl").orEmpty(),
-                    online = doc.getBoolean("online") ?: false,
-                    lastSeen = doc.getTimestamp("lastSeen")
-                )
-            }
-            onChange(users.sortedWith(compareByDescending<AppUser> { it.online }.thenBy { it.displayName.lowercase(Locale.ROOT) }))
+    ): ListenerRegistration = db.collection("users").addSnapshotListener { snapshot, error ->
+        if (error != null) {
+            onError(error)
+            return@addSnapshotListener
         }
+        val me = currentUid
+        val users = snapshot?.documents.orEmpty().mapNotNull { doc ->
+            val uid = doc.getString("uid") ?: doc.id
+            if (uid == me) null else AppUser(
+                uid = uid,
+                displayName = doc.getString("displayName").orEmpty(),
+                email = doc.getString("email").orEmpty(),
+                bio = doc.getString("bio").orEmpty(),
+                photoUrl = doc.getString("photoUrl").orEmpty(),
+                online = doc.getBoolean("online") ?: false,
+                lastSeen = doc.getTimestamp("lastSeen")
+            )
+        }
+        onChange(users.sortedWith(compareByDescending<AppUser> { it.online }.thenBy { it.displayName.lowercase(Locale.ROOT) }))
+    }
 
     fun observeIncomingCall(
         uid: String,
@@ -105,29 +104,20 @@ class GlobalCallRepository(
             onChange(calls.take(60))
         }
 
-    fun observeCallStatus(
-        callId: String,
-        onChange: (String) -> Unit
-    ): ListenerRegistration = db.collection("calls").document(callId)
-        .addSnapshotListener { snapshot, _ ->
+    fun observeCallStatus(callId: String, onChange: (String) -> Unit): ListenerRegistration =
+        db.collection("calls").document(callId).addSnapshotListener { snapshot, _ ->
             snapshot?.getString("status")?.let(onChange)
         }
 
-    fun observeBlockedUsers(
-        uid: String,
-        onChange: (Set<String>) -> Unit
-    ): ListenerRegistration = db.collection("blocks")
-        .whereEqualTo("blockerUid", uid)
-        .addSnapshotListener { snapshot, _ ->
+    fun observeBlockedUsers(uid: String, onChange: (Set<String>) -> Unit): ListenerRegistration =
+        db.collection("blocks").whereEqualTo("blockerUid", uid).addSnapshotListener { snapshot, _ ->
             onChange(snapshot?.documents.orEmpty().mapNotNull { it.getString("blockedUid") }.toSet())
         }
 
     suspend fun startCall(peer: AppUser, video: Boolean): CallSession {
         val response = authenticatedPost(
-            path = "/api/calls/start",
-            body = JSONObject()
-                .put("calleeUid", peer.uid)
-                .put("video", video)
+            "/api/calls/start",
+            JSONObject().put("calleeUid", peer.uid).put("video", video)
         )
         return CallSession(
             callId = response.getString("callId"),
@@ -141,13 +131,13 @@ class GlobalCallRepository(
     }
 
     suspend fun acceptCall(invite: CallInvite): CallSession {
-        db.collection("calls").document(invite.id)
-            .update(
-                mapOf(
-                    "status" to "accepted",
-                    "acceptedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
+        db.collection("calls").document(invite.id).update(
+            mapOf(
+                "status" to "accepted",
+                "acceptedAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
         val token = requestToken(invite.id)
         return CallSession(
             callId = invite.id,
@@ -161,32 +151,29 @@ class GlobalCallRepository(
     }
 
     suspend fun declineCall(callId: String) {
-        db.collection("calls").document(callId)
-            .update(
-                mapOf(
-                    "status" to "declined",
-                    "endedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
+        db.collection("calls").document(callId).update(
+            mapOf(
+                "status" to "declined",
+                "endedAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
     }
 
     suspend fun endCall(callId: String) {
         runCatching {
-            db.collection("calls").document(callId)
-                .update(
-                    mapOf(
-                        "status" to "ended",
-                        "endedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
+            db.collection("calls").document(callId).update(
+                mapOf(
+                    "status" to "ended",
+                    "endedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
         }
     }
 
     suspend fun requestToken(callId: String): Pair<String, String> {
-        val response = authenticatedPost(
-            path = "/api/token",
-            body = JSONObject().put("callId", callId)
-        )
+        val response = authenticatedPost("/api/token", JSONObject().put("callId", callId))
         return response.getString("serverUrl") to response.getString("participantToken")
     }
 
@@ -195,10 +182,7 @@ class GlobalCallRepository(
         val cleanName = displayName.trim()
         require(cleanName.length in 2..50) { "Name must be 2-50 characters" }
         require(bio.length <= 120) { "Bio must be 120 characters or less" }
-
-        user.updateProfile(
-            UserProfileChangeRequest.Builder().setDisplayName(cleanName).build()
-        ).await()
+        user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(cleanName).build()).await()
         db.collection("users").document(user.uid).set(
             mapOf(
                 "uid" to user.uid,
@@ -214,12 +198,12 @@ class GlobalCallRepository(
 
     suspend fun saveFcmToken(token: String) {
         val uid = currentUid ?: return
-        db.collection("users").document(uid).set(
+        db.collection("devices").document(uid).set(
             mapOf(
                 "uid" to uid,
                 "fcmToken" to token,
-                "devicePlatform" to "android",
-                "tokenUpdatedAt" to FieldValue.serverTimestamp()
+                "platform" to "android",
+                "updatedAt" to FieldValue.serverTimestamp()
             ),
             SetOptions.merge()
         ).await()
@@ -273,9 +257,7 @@ class GlobalCallRepository(
         val user = requireNotNull(auth.currentUser) { "Not signed in" }
         val idToken = user.getIdToken(false).await().token ?: error("Missing Firebase ID token")
         val baseUrl = BuildConfig.API_BASE_URL.trimEnd('/')
-        require(!baseUrl.contains("YOUR_DOMAIN")) {
-            "Configure API_BASE_URL in app/build.gradle.kts"
-        }
+        require(!baseUrl.contains("YOUR_DOMAIN")) { "Configure API_BASE_URL in app/build.gradle.kts" }
 
         val connection = (URL("$baseUrl$path").openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
@@ -285,17 +267,16 @@ class GlobalCallRepository(
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Authorization", "Bearer $idToken")
         }
-
         try {
             connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val responseText = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
             if (code !in 200..299) {
-                val message = runCatching { JSONObject(responseText).optString("error") }.getOrNull()
+                val message = runCatching { JSONObject(text).optString("error") }.getOrNull()
                 error(message?.ifBlank { null } ?: "Server error $code")
             }
-            JSONObject(responseText)
+            JSONObject(text)
         } finally {
             connection.disconnect()
         }
