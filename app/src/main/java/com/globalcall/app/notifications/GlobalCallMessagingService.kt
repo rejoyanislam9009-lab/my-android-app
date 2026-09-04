@@ -8,6 +8,8 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -131,6 +133,12 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
     private fun createCallChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        val ringtoneAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+
         val channel = NotificationChannel(
             CALL_CHANNEL_ID,
             "Incoming calls",
@@ -138,7 +146,7 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
         ).apply {
             description = "Incoming GlobalCall voice and video calls"
             lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
-            setSound(null, null)
+            setSound(ringtoneUri, ringtoneAttributes)
             enableVibration(true)
         }
         manager.createNotificationChannel(channel)
