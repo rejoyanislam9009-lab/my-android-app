@@ -101,14 +101,8 @@ fun CallScreen(
     var pageError by remember { mutableStateOf<String?>(null) }
     var permissionsGranted by remember {
         mutableStateOf(
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED &&
-                (!session.video || ContextCompat.checkSelfPermission(
-                    context,
-                    Manifest.permission.CAMERA
-                ) == PackageManager.PERMISSION_GRANTED)
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
+                (!session.video || ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
         )
     }
 
@@ -125,15 +119,9 @@ fun CallScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         val mic = result[Manifest.permission.RECORD_AUDIO]
-            ?: (ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED)
+            ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
         val camera = !session.video || (result[Manifest.permission.CAMERA]
-            ?: (ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.CAMERA
-            ) == PackageManager.PERMISSION_GRANTED))
+            ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED))
         permissionsGranted = mic && camera
     }
 
@@ -154,9 +142,7 @@ fun CallScreen(
         } else {
             val registration = requireNotNull(repository).observeCallStatus(session.callId) { status ->
                 callStatus = status
-                if (status == "declined" || status == "ended") {
-                    finish(false)
-                }
+                if (status == "declined" || status == "ended") finish(false)
             }
             onDispose { registration.remove() }
         }
@@ -174,181 +160,180 @@ fun CallScreen(
         }
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Color(0xFF05080D))
-    ) {
-        when {
-            !permissionsGranted -> PermissionGate(
-                video = session.video,
-                onRequest = {
-                    permissionLauncher.launch(
-                        buildList {
-                            add(Manifest.permission.RECORD_AUDIO)
-                            if (session.video) add(Manifest.permission.CAMERA)
-                        }.toTypedArray()
-                    )
-                },
-                onEnd = { finish(true) }
-            )
-
-            !mediaReady -> OutgoingCallingScreen(
-                session = session,
-                status = callStatus,
-                onEnd = { finish(true) }
-            )
-
-            else -> {
-                val meetingUrl = remember(session.token, session.video) {
-                    val base = session.serverUrl.trimEnd('/')
-                    val encodedRoom = Uri.encode(session.token)
-                    "$base/$encodedRoom#config.prejoinPageEnabled=false&config.disableDeepLinking=true&config.startWithAudioMuted=false&config.startWithVideoMuted=${!session.video}&config.disableInviteFunctions=true&interfaceConfig.MOBILE_APP_PROMO=false"
-                }
-
-                var webViewRef by remember { mutableStateOf<WebView?>(null) }
-
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            webViewRef = this
-                            setBackgroundColor(android.graphics.Color.BLACK)
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            settings.databaseEnabled = true
-                            settings.mediaPlaybackRequiresUserGesture = false
-                            settings.cacheMode = WebSettings.LOAD_DEFAULT
-                            settings.allowContentAccess = true
-                            settings.allowFileAccess = false
-                            settings.userAgentString = settings.userAgentString
-                                .replace("; wv", "")
-                                .replace(Regex("Version/[0-9.]+\\s"), "")
-
-                            CookieManager.getInstance().setAcceptCookie(true)
-                            CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
-
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    request: WebResourceRequest?
-                                ): Boolean = false
-
-                                override fun onPageStarted(
-                                    view: WebView?,
-                                    url: String?,
-                                    favicon: android.graphics.Bitmap?
-                                ) {
-                                    pageLoading = true
-                                    pageError = null
-                                }
-
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    pageLoading = false
-                                }
-
-                                override fun onReceivedError(
-                                    view: WebView?,
-                                    request: WebResourceRequest?,
-                                    error: WebResourceError?
-                                ) {
-                                    if (request?.isForMainFrame == true) {
-                                        pageLoading = false
-                                        pageError = "Unable to connect to the live room"
-                                    }
-                                }
-                            }
-
-                            webChromeClient = object : WebChromeClient() {
-                                override fun onPermissionRequest(request: PermissionRequest?) {
-                                    val allowed = request?.resources.orEmpty().filter {
-                                        it == PermissionRequest.RESOURCE_AUDIO_CAPTURE ||
-                                            it == PermissionRequest.RESOURCE_VIDEO_CAPTURE
-                                    }.toTypedArray()
-                                    if (allowed.isNotEmpty()) {
-                                        request?.grant(allowed)
-                                    } else {
-                                        request?.deny()
-                                    }
-                                }
-                            }
-                            loadUrl(meetingUrl)
-                        }
-                    }
+    when {
+        !permissionsGranted -> PermissionScreen(
+            video = session.video,
+            onRequest = {
+                permissionLauncher.launch(
+                    buildList {
+                        add(Manifest.permission.RECORD_AUDIO)
+                        if (session.video) add(Manifest.permission.CAMERA)
+                    }.toTypedArray()
                 )
+            },
+            onEnd = { finish(true) }
+        )
 
-                DisposableEffect(Unit) {
-                    onDispose {
-                        webViewRef?.apply {
-                            stopLoading()
-                            loadUrl("about:blank")
-                            clearHistory()
-                            removeAllViews()
-                            destroy()
-                        }
-                        webViewRef = null
-                    }
-                }
+        !mediaReady -> CallingScreen(
+            session = session,
+            status = callStatus,
+            onEnd = { finish(true) }
+        )
 
-                LiveCallTopBar(
-                    session = session,
-                    elapsedSeconds = elapsedSeconds,
-                    roomCode = roomCode,
-                    onCopy = { clipboard.setText(AnnotatedString(roomCode)) }
-                )
-
-                if (pageLoading) {
-                    Surface(
-                        modifier = Modifier.align(Alignment.Center),
-                        color = Color(0xDD111722),
-                        shape = RoundedCornerShape(24.dp)
-                    ) {
-                        Column(
-                            Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(30.dp),
-                                strokeWidth = 3.dp,
-                                color = Color(0xFF9FB3FF)
-                            )
-                            Spacer(Modifier.height(12.dp))
-                            Text("Connecting live call…", color = Color.White)
-                        }
-                    }
-                }
-
-                pageError?.let { error ->
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .padding(24.dp),
-                        color = Color(0xEE171B25),
-                        shape = RoundedCornerShape(24.dp)
-                    ) {
-                        Column(
-                            Modifier.padding(22.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(error, color = Color.White, fontWeight = FontWeight.Bold)
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                "Check the internet connection and try the room again.",
-                                color = Color.White.copy(alpha = 0.68f),
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    }
-                }
-
-                LiveCallEndButton(onEnd = { finish(true) })
+        else -> Box(
+            Modifier
+                .fillMaxSize()
+                .background(Color(0xFF05080D))
+        ) {
+            val meetingUrl = remember(session.token, session.video) {
+                val base = session.serverUrl.trimEnd('/')
+                val encodedRoom = Uri.encode(session.token)
+                "$base/$encodedRoom#config.prejoinPageEnabled=false&config.disableDeepLinking=true&config.startWithAudioMuted=false&config.startWithVideoMuted=${!session.video}&config.disableInviteFunctions=true&interfaceConfig.MOBILE_APP_PROMO=false"
             }
+            var webViewRef by remember { mutableStateOf<WebView?>(null) }
+
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    WebView(ctx).apply {
+                        webViewRef = this
+                        setBackgroundColor(android.graphics.Color.BLACK)
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.databaseEnabled = true
+                        settings.mediaPlaybackRequiresUserGesture = false
+                        settings.cacheMode = WebSettings.LOAD_DEFAULT
+                        settings.allowContentAccess = true
+                        settings.allowFileAccess = false
+                        settings.userAgentString = settings.userAgentString
+                            .replace("; wv", "")
+                            .replace(Regex("Version/[0-9.]+\\s"), "")
+
+                        CookieManager.getInstance().setAcceptCookie(true)
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+
+                        webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(
+                                view: WebView?,
+                                request: WebResourceRequest?
+                            ): Boolean = false
+
+                            override fun onPageStarted(
+                                view: WebView?,
+                                url: String?,
+                                favicon: android.graphics.Bitmap?
+                            ) {
+                                pageLoading = true
+                                pageError = null
+                            }
+
+                            override fun onPageFinished(view: WebView?, url: String?) {
+                                pageLoading = false
+                            }
+
+                            override fun onReceivedError(
+                                view: WebView?,
+                                request: WebResourceRequest?,
+                                error: WebResourceError?
+                            ) {
+                                if (request?.isForMainFrame == true) {
+                                    pageLoading = false
+                                    pageError = "Unable to connect to the live room"
+                                }
+                            }
+                        }
+
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onPermissionRequest(request: PermissionRequest?) {
+                                val allowed = request?.resources.orEmpty().filter {
+                                    it == PermissionRequest.RESOURCE_AUDIO_CAPTURE ||
+                                        it == PermissionRequest.RESOURCE_VIDEO_CAPTURE
+                                }.toTypedArray()
+                                if (allowed.isNotEmpty()) request?.grant(allowed) else request?.deny()
+                            }
+                        }
+                        loadUrl(meetingUrl)
+                    }
+                }
+            )
+
+            DisposableEffect(Unit) {
+                onDispose {
+                    webViewRef?.apply {
+                        stopLoading()
+                        loadUrl("about:blank")
+                        clearHistory()
+                        removeAllViews()
+                        destroy()
+                    }
+                    webViewRef = null
+                }
+            }
+
+            LiveHeader(
+                session = session,
+                elapsedSeconds = elapsedSeconds,
+                roomCode = roomCode,
+                onCopy = { clipboard.setText(AnnotatedString(roomCode)) },
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+
+            if (pageLoading) {
+                Surface(
+                    modifier = Modifier.align(Alignment.Center),
+                    color = Color(0xE6111722),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Column(
+                        Modifier.padding(horizontal = 28.dp, vertical = 22.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(30.dp),
+                            strokeWidth = 3.dp,
+                            color = Color(0xFF9FB3FF)
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text("Connecting live call…", color = Color.White)
+                    }
+                }
+            }
+
+            pageError?.let { error ->
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .padding(24.dp),
+                    color = Color(0xF2171B25),
+                    shape = RoundedCornerShape(24.dp)
+                ) {
+                    Column(
+                        Modifier.padding(22.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(error, color = Color.White, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Check the internet connection and try the room again.",
+                            color = Color.White.copy(alpha = 0.68f),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+            }
+
+            EndCallButton(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 92.dp),
+                onEnd = { finish(true) }
+            )
         }
     }
 }
 
 @Composable
-private fun PermissionGate(
+private fun PermissionScreen(
     video: Boolean,
     onRequest: () -> Unit,
     onEnd: () -> Unit
@@ -356,12 +341,7 @@ private fun PermissionGate(
     Box(
         Modifier
             .fillMaxSize()
-            .background(
-                Brush.radialGradient(
-                    listOf(Color(0xFF19345F), Color(0xFF09111E), Color(0xFF05080D)),
-                    radius = 1100f
-                )
-            )
+            .background(callBackdrop())
     ) {
         Column(
             modifier = Modifier
@@ -386,19 +366,22 @@ private fun PermissionGate(
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                "GlobalCall needs permission to start the live ${if (video) "video" else "voice"} call.",
+                "Allow access to start the live ${if (video) "video" else "voice"} call.",
                 color = Color.White.copy(alpha = 0.68f),
                 style = MaterialTheme.typography.bodyMedium
             )
             Spacer(Modifier.height(22.dp))
             Button(onClick = onRequest) { Text("Allow & continue") }
         }
-        LiveCallEndButton(onEnd = onEnd)
+        EndCallButton(
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 34.dp),
+            onEnd = onEnd
+        )
     }
 }
 
 @Composable
-private fun OutgoingCallingScreen(
+private fun CallingScreen(
     session: CallSession,
     status: String,
     onEnd: () -> Unit
@@ -406,7 +389,7 @@ private fun OutgoingCallingScreen(
     val transition = rememberInfiniteTransition(label = "calling")
     val pulse by transition.animateFloat(
         initialValue = 0.96f,
-        targetValue = 1.1f,
+        targetValue = 1.10f,
         animationSpec = infiniteRepeatable(
             animation = tween(900),
             repeatMode = RepeatMode.Reverse
@@ -417,12 +400,7 @@ private fun OutgoingCallingScreen(
     Box(
         Modifier
             .fillMaxSize()
-            .background(
-                Brush.radialGradient(
-                    listOf(Color(0xFF193C73), Color(0xFF0B1628), Color(0xFF05080D)),
-                    radius = 1200f
-                )
-            )
+            .background(callBackdrop())
     ) {
         Column(
             modifier = Modifier
@@ -475,19 +453,24 @@ private fun OutgoingCallingScreen(
                 style = MaterialTheme.typography.bodySmall
             )
         }
-        LiveCallEndButton(onEnd = onEnd)
+
+        EndCallButton(
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 34.dp),
+            onEnd = onEnd
+        )
     }
 }
 
 @Composable
-private fun LiveCallTopBar(
+private fun LiveHeader(
     session: CallSession,
     elapsedSeconds: Int,
     roomCode: String,
-    onCopy: () -> Unit
+    onCopy: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(top = 14.dp, start = 14.dp, end = 14.dp),
         color = Color(0xD910151E),
@@ -551,43 +534,38 @@ private fun LiveCallTopBar(
 }
 
 @Composable
-private fun LiveCallEndButton(onEnd: () -> Unit) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 18.dp, end = 18.dp, bottom = 24.dp),
-        color = Color.Transparent
+private fun EndCallButton(
+    modifier: Modifier = Modifier,
+    onEnd: () -> Unit
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center
+        FilledIconButton(
+            onClick = onEnd,
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = Color(0xFFE84545),
+                contentColor = Color.White
+            ),
+            modifier = Modifier.size(66.dp)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                FilledIconButton(
-                    onClick = onEnd,
-                    colors = IconButtonDefaults.filledIconButtonColors(
-                        containerColor = Color(0xFFE84545),
-                        contentColor = Color.White
-                    ),
-                    modifier = Modifier.size(66.dp)
-                ) {
-                    Icon(
-                        Icons.Default.CallEnd,
-                        "End call",
-                        modifier = Modifier.size(30.dp)
-                    )
-                }
-                Spacer(Modifier.height(7.dp))
-                Text(
-                    "End",
-                    color = Color.White.copy(alpha = 0.86f),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
+            Icon(Icons.Default.CallEnd, "End call", modifier = Modifier.size(30.dp))
         }
+        Spacer(Modifier.height(7.dp))
+        Text(
+            "End",
+            color = Color.White.copy(alpha = 0.88f),
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold
+        )
     }
 }
+
+private fun callBackdrop(): Brush = Brush.radialGradient(
+    listOf(Color(0xFF193C73), Color(0xFF0B1628), Color(0xFF05080D)),
+    radius = 1200f
+)
 
 private fun formatDuration(seconds: Int): String =
     "%02d:%02d".format(seconds / 60, seconds % 60)
