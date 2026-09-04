@@ -11,12 +11,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.SetOptions
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.Locale
 
 class GlobalCallRepository(
@@ -71,7 +66,8 @@ class GlobalCallRepository(
                     calleeUid = it.getString("calleeUid").orEmpty(),
                     calleeName = it.getString("calleeName").orEmpty(),
                     status = it.getString("status").orEmpty(),
-                    video = it.getBoolean("video") ?: true
+                    video = it.getBoolean("video") ?: true,
+                    roomName = it.getString("roomName").orEmpty()
                 )
             })
         }
@@ -115,16 +111,37 @@ class GlobalCallRepository(
         }
 
     suspend fun startCall(peer: AppUser, video: Boolean): CallSession {
-        val response = authenticatedPost(
-            "/api/calls/start",
-            JSONObject().put("calleeUid", peer.uid).put("video", video)
-        )
+        val user = requireNotNull(auth.currentUser) { "Not signed in" }
+        require(peer.uid.isNotBlank()) { "Missing contact" }
+
+        val blockedByMe = runCatching { db.collection("blocks").document("${user.uid}_${peer.uid}").get().await().exists() }.getOrDefault(false)
+        val blockedByPeer = runCatching { db.collection("blocks").document("${peer.uid}_${user.uid}").get().await().exists() }.getOrDefault(false)
+        require(!blockedByMe && !blockedByPeer) { "Calling is unavailable for this contact" }
+
+        val callRef = db.collection("calls").document()
+        val roomName = "GlobalCall-${callRef.id}"
+        val callerName = user.displayName ?: user.email.orEmpty()
+        callRef.set(
+            mapOf(
+                "callerUid" to user.uid,
+                "callerName" to callerName,
+                "calleeUid" to peer.uid,
+                "calleeName" to peer.displayName.ifBlank { peer.email },
+                "participantUids" to listOf(user.uid, peer.uid),
+                "roomName" to roomName,
+                "status" to "ringing",
+                "video" to video,
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
+
         return CallSession(
-            callId = response.getString("callId"),
+            callId = callRef.id,
             peerUid = peer.uid,
             peerName = peer.displayName.ifBlank { peer.email },
-            serverUrl = response.getString("serverUrl"),
-            token = response.getString("participantToken"),
+            serverUrl = BuildConfig.MEETING_BASE_URL,
+            token = roomName,
             video = video,
             outgoing = true
         )
@@ -138,15 +155,30 @@ class GlobalCallRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
         ).await()
-        val token = requestToken(invite.id)
         return CallSession(
             callId = invite.id,
             peerUid = invite.callerUid,
             peerName = invite.callerName,
-            serverUrl = token.first,
-            token = token.second,
+            serverUrl = BuildConfig.MEETING_BASE_URL,
+            token = invite.roomName.ifBlank { "GlobalCall-${invite.id}" },
             video = invite.video,
             outgoing = false
+        )
+    }
+
+    suspend fun loadInvite(callId: String): CallInvite? {
+        val uid = currentUid ?: return null
+        val doc = db.collection("calls").document(callId).get().await()
+        if (!doc.exists() || doc.getString("calleeUid") != uid) return null
+        return CallInvite(
+            id = doc.id,
+            callerUid = doc.getString("callerUid").orEmpty(),
+            callerName = doc.getString("callerName").orEmpty(),
+            calleeUid = doc.getString("calleeUid").orEmpty(),
+            calleeName = doc.getString("calleeName").orEmpty(),
+            status = doc.getString("status").orEmpty(),
+            video = doc.getBoolean("video") ?: true,
+            roomName = doc.getString("roomName").orEmpty()
         )
     }
 
@@ -170,11 +202,6 @@ class GlobalCallRepository(
                 )
             ).await()
         }
-    }
-
-    suspend fun requestToken(callId: String): Pair<String, String> {
-        val response = authenticatedPost("/api/token", JSONObject().put("callId", callId))
-        return response.getString("serverUrl") to response.getString("participantToken")
     }
 
     suspend fun updateProfile(displayName: String, bio: String) {
@@ -251,34 +278,5 @@ class GlobalCallRepository(
                 "status" to "open"
             )
         ).await()
-    }
-
-    private suspend fun authenticatedPost(path: String, body: JSONObject): JSONObject = withContext(Dispatchers.IO) {
-        val user = requireNotNull(auth.currentUser) { "Not signed in" }
-        val idToken = user.getIdToken(false).await().token ?: error("Missing Firebase ID token")
-        val baseUrl = BuildConfig.API_BASE_URL.trimEnd('/')
-        require(!baseUrl.contains("YOUR_DOMAIN")) { "Configure API_BASE_URL in app/build.gradle.kts" }
-
-        val connection = (URL("$baseUrl$path").openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            connectTimeout = 15_000
-            readTimeout = 15_000
-            doOutput = true
-            setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Authorization", "Bearer $idToken")
-        }
-        try {
-            connection.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
-            val code = connection.responseCode
-            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
-            if (code !in 200..299) {
-                val message = runCatching { JSONObject(text).optString("error") }.getOrNull()
-                error(message?.ifBlank { null } ?: "Server error $code")
-            }
-            JSONObject(text)
-        } finally {
-            connection.disconnect()
-        }
     }
 }
