@@ -38,7 +38,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun CallScreen(
     session: CallSession,
-    repository: GlobalCallRepository,
+    repository: GlobalCallRepository? = null,
     onFinish: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
@@ -63,8 +63,10 @@ fun CallScreen(
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        val mic = result[Manifest.permission.RECORD_AUDIO] ?: false
-        val camera = !session.video || (result[Manifest.permission.CAMERA] ?: false)
+        val mic = result[Manifest.permission.RECORD_AUDIO]
+            ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+        val camera = !session.video || (result[Manifest.permission.CAMERA]
+            ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED))
         permissionsGranted = mic && camera
     }
 
@@ -79,8 +81,8 @@ fun CallScreen(
         }
     }
 
-    DisposableEffect(session.callId) {
-        if (session.callId.startsWith("instant-")) {
+    DisposableEffect(session.callId, repository) {
+        if (session.callId.startsWith("instant-") || repository == null) {
             onDispose { }
         } else {
             val registration = repository.observeCallStatus(session.callId) { status ->
