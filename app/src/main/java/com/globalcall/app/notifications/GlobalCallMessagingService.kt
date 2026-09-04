@@ -59,6 +59,18 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
     ) {
         createCallChannel()
 
+        val showIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(MainActivity.EXTRA_CALL_ID, callId)
+            putExtra(MainActivity.EXTRA_CALL_ACTION, MainActivity.ACTION_SHOW_INCOMING)
+        }
+        val showPendingIntent = PendingIntent.getActivity(
+            this,
+            callId.hashCode() xor 0x51A0,
+            showIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val answerIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(MainActivity.EXTRA_CALL_ID, callId)
@@ -98,8 +110,8 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
             .setOngoing(true)
             .setAutoCancel(false)
             .setTimeoutAfter(60_000L)
-            .setFullScreenIntent(answerPendingIntent, true)
-            .setContentIntent(answerPendingIntent)
+            .setFullScreenIntent(showPendingIntent, true)
+            .setContentIntent(showPendingIntent)
             .setStyle(
                 NotificationCompat.CallStyle.forIncomingCall(
                     caller,
@@ -148,7 +160,8 @@ class CallActionReceiver : BroadcastReceiver() {
             .update(
                 mapOf(
                     "status" to "declined",
-                    "endedAt" to FieldValue.serverTimestamp()
+                    "endedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
                 )
             )
             .addOnCompleteListener {
