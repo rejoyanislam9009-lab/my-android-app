@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GlobalCall</string>
+    <string name="welcome">যেকোনো জায়গা থেকে মুখোমুখি কথা বলুন।</string>
+    <string name="email">ইমেইল</string>
+    <string name="password">পাসওয়ার্ড</string>
+    <string name="display_name">নাম</string>
+    <string name="sign_in">সাইন ইন</string>
+    <string name="create_account">অ্যাকাউন্ট খুলুন</string>
+    <string name="people">মানুষজন</string>
+    <string name="search_people">মানুষ খুঁজুন</string>
+    <string name="video_call">ভিডিও কল</string>
+    <string name="incoming_call">ইনকামিং ভিডিও কল</string>
+    <string name="accept">রিসিভ</string>
+    <string name="decline">কেটে দিন</string>
+    <string name="end_call">কল শেষ করুন</string>
+    <string name="logout">লগ আউট</string>
+</resources>
