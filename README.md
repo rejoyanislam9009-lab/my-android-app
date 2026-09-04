@@ -1,53 +1,80 @@
 # GlobalCall
 
-GlobalCall is a production-oriented Android video calling foundation built with Kotlin, Jetpack Compose, Firebase and LiveKit.
+GlobalCall is a production-oriented Android voice and video calling application built with Kotlin, Jetpack Compose, Firebase and LiveKit.
 
-## Included in this branch
+## Calling app experience included
 
-- Email/password account creation and sign-in with Firebase Authentication
-- User profiles stored in Cloud Firestore
+- Firebase email/password account creation and sign-in
+- Password reset and email verification
+- Editable user profile and bio
 - Searchable signed-in user directory
-- One-to-one outgoing call creation
-- Foreground incoming-call dialog using Firestore realtime listeners
+- Online presence indicator
+- One-to-one voice calls
+- One-to-one video calls
+- Outgoing ringing state
+- Foreground incoming-call dialog
+- High-priority FCM background incoming-call notifications
+- Android call-style notification with Answer / Decline actions
+- Full-screen incoming-call intent support
 - Accept / decline / end-call state handling
-- LiveKit camera and microphone publishing
+- LiveKit microphone and camera publishing
 - Remote and local video rendering
-- Mic mute/unmute and camera on/off controls
-- Firestore participant security rules
-- Firebase-authenticated backend token endpoint
-- Backend verification that only the caller/callee can receive a LiveKit room token
-- English, Bengali and Arabic resources with RTL support
-- Docker-ready Node.js token service
-- GitHub Actions Android APK build
+- Voice-only call screen with call timer
+- Mic mute/unmute
+- Speaker on/off
+- Camera on/off
+- Recent call history
+- Incoming / outgoing / missed-call presentation
+- One-tap redial for voice or video
+- Block / unblock users
+- Report users
+- Account deletion control
+- English, Bengali and Arabic UI resources with RTL support
+- Light and dark Material 3 UI
+
+## Security model
+
+- LiveKit API secrets never enter the Android application.
+- Call creation is server-only; Firestore client rules do not allow users to forge new call documents.
+- The backend validates Firebase ID tokens before creating calls or issuing LiveKit tokens.
+- The backend checks blocking in both directions before a call can be created.
+- A LiveKit token is issued only to a participant listed on that call.
+- Participant tokens are short-lived and room-scoped.
+- FCM registration tokens are stored in private `devices/{uid}` documents, not in the public user directory.
+- Call documents restrict client updates to allowed status/timestamp transitions while participant and room fields remain immutable.
+- Abuse reports are write-only from the client.
 
 ## Architecture
 
 ```text
 Android app
-  |-- Firebase Auth -------- user identity
-  |-- Cloud Firestore ------ profiles + call invitations/status/history data
-  |-- Token API ------------ verifies Firebase ID token + call membership
-  |-- LiveKit -------------- realtime WebRTC media transport / SFU
+  |-- Firebase Auth -------- identity / accounts
+  |-- Cloud Firestore ------ profiles + calls + blocks + reports
+  |-- Firebase Messaging --- background incoming-call delivery
+  |-- GlobalCall API ------- authenticated call creation + LiveKit tokens
+  |-- LiveKit -------------- realtime WebRTC audio/video transport
 
-Token API
-  |-- Firebase Admin ------- verifies users and reads call membership
-  |-- LiveKit Server SDK --- issues short-lived room-scoped participant tokens
+GlobalCall API
+  |-- Firebase Admin ------- verifies users, call membership and device tokens
+  |-- Firebase Messaging --- high-priority incoming call push
+  |-- LiveKit Server SDK --- short-lived room-scoped participant tokens
 ```
 
-The app never stores `LIVEKIT_API_SECRET` on the device. LiveKit participant tokens are issued by the backend only after Firebase authentication and participant verification.
-
-## Required services
+## Required production configuration
 
 1. Create a Firebase project and Android app with package name `com.globalcall.app`.
 2. Enable Firebase Authentication -> Email/Password.
-3. Create a Cloud Firestore database.
-4. Deploy `firestore.rules`.
-5. Download your real `google-services.json` into `app/google-services.json`. Do **not** commit private service-account credentials.
-6. Create a LiveKit Cloud project or deploy LiveKit yourself.
-7. Deploy the `server/` service with Firebase Admin credentials and LiveKit environment variables.
-8. Replace `https://YOUR_DOMAIN.example/api/token` in `app/build.gradle.kts` with your deployed HTTPS token endpoint.
+3. Create Cloud Firestore.
+4. Deploy this repository's `firestore.rules`.
+5. Add the real Firebase Android config as `app/google-services.json`.
+6. Create a LiveKit Cloud project or deploy a LiveKit server.
+7. Deploy the `server/` service with Firebase Admin application-default credentials.
+8. Configure `LIVEKIT_URL`, `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` on the server.
+9. Set `API_BASE_URL` in `app/build.gradle.kts` to the deployed HTTPS GlobalCall API base URL, for example `https://api.example.com`.
 
-## Token server
+Never commit service-account JSON files, LiveKit API secrets, release keystores or production `.env` files.
+
+## Backend
 
 ```bash
 cd server
@@ -65,7 +92,7 @@ LIVEKIT_API_SECRET=...
 GOOGLE_APPLICATION_CREDENTIALS=/path/to/firebase-service-account.json
 ```
 
-For Google Cloud Run / other Google-managed runtimes, prefer workload/application-default credentials instead of shipping a service-account JSON inside the container.
+On Google-managed infrastructure such as Cloud Run, prefer workload/application-default credentials instead of shipping a service-account file in the container.
 
 ## Android build
 
@@ -75,30 +102,24 @@ CI uses JDK 17 and Gradle 8.9:
 gradle assembleDebug
 ```
 
-The generated APK is uploaded by GitHub Actions as `globalcall-debug-apk`.
+The debug APK is uploaded by GitHub Actions as a workflow artifact.
 
-## Production work still required before public release
+## Remaining launch-hardening work
 
-This branch is a functional architecture/MVP foundation, not yet a finished App Store / Play Store release. Before international launch, add:
+The main calling product flow is implemented. Before a large international public launch, complete the environment-specific release work below:
 
-- FCM background incoming-call notifications and Android full-screen call notification UX
-- Phone-number / Google / Apple authentication if required
-- Contact syncing and username/QR discovery
-- Call history screen and missed-call badges
-- Block/report controls and abuse moderation
-- TURN/SFU regional capacity planning (LiveKit Cloud already handles this if selected)
-- Network quality indicators, reconnection UX and device switching
-- Optional end-to-end encryption policy and key management
-- Privacy policy, Terms of Service, account deletion and data export
-- Rate limits / abuse detection for call creation
-- Observability, crash reporting, backend logs and alerting
-- Automated tests and real-device matrix testing
-- Release signing, Play Integrity/App Check and Play Store compliance
+- Add phone-number / Google authentication only if the product requires those sign-in methods
+- Add username/QR discovery or optional address-book contact matching if desired
+- Add network-quality indicators, explicit reconnection UX and audio-device switching
+- Add App Check / Play Integrity and stricter automated abuse/rate controls
+- Publish Privacy Policy and Terms of Service and define data-retention/export processes
+- Add automated unit/UI tests plus real-device and weak-network call testing
+- Configure Crashlytics/monitoring dashboards and backend alerting
+- Configure release signing, Play Console declarations and production rollout tracks
+- Plan regional LiveKit/SFU capacity if self-hosting instead of LiveKit Cloud
 
 ## Current dependency references
 
 - Firebase Android BoM: `34.18.0`
 - LiveKit Android SDK: `2.28.0`
 - LiveKit Server SDK (Node): `2.18.0`
-
-Never commit Firebase service-account keys, LiveKit API secrets, signing keystores or production `.env` files.
