@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GlobalCall</string>
+    <string name="welcome">Connect face to face, anywhere.</string>
+    <string name="email">Email</string>
+    <string name="password">Password</string>
+    <string name="display_name">Display name</string>
+    <string name="sign_in">Sign in</string>
+    <string name="create_account">Create account</string>
+    <string name="people">People</string>
+    <string name="search_people">Search people</string>
+    <string name="video_call">Video call</string>
+    <string name="incoming_call">Incoming video call</string>
+    <string name="accept">Accept</string>
+    <string name="decline">Decline</string>
+    <string name="end_call">End call</string>
+    <string name="logout">Log out</string>
+</resources>
