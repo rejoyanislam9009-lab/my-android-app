@@ -28,7 +28,7 @@ import kotlinx.coroutines.tasks.await
 import java.util.Locale
 
 @Composable
-fun AuthScreen(auth: FirebaseAuth) {
+fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
     val db = remember { FirebaseFirestore.getInstance() }
     val scope = rememberCoroutineScope()
     var createMode by remember { mutableStateOf(false) }
@@ -152,18 +152,20 @@ fun AuthScreen(auth: FirebaseAuth) {
                                     user.updateProfile(
                                         UserProfileChangeRequest.Builder().setDisplayName(displayName.trim()).build()
                                     ).await()
-                                    db.collection("users").document(user.uid).set(
-                                        mapOf(
-                                            "uid" to user.uid,
-                                            "displayName" to displayName.trim(),
-                                            "email" to email.lowercase(Locale.ROOT),
-                                            "bio" to "",
-                                            "locale" to Locale.getDefault().toLanguageTag(),
-                                            "online" to true,
-                                            "createdAt" to FieldValue.serverTimestamp(),
-                                            "lastSeen" to FieldValue.serverTimestamp()
-                                        )
-                                    ).await()
+                                    runCatching {
+                                        db.collection("users").document(user.uid).set(
+                                            mapOf(
+                                                "uid" to user.uid,
+                                                "displayName" to displayName.trim(),
+                                                "email" to email.lowercase(Locale.ROOT),
+                                                "bio" to "",
+                                                "locale" to Locale.getDefault().toLanguageTag(),
+                                                "online" to true,
+                                                "createdAt" to FieldValue.serverTimestamp(),
+                                                "lastSeen" to FieldValue.serverTimestamp()
+                                            )
+                                        ).await()
+                                    }
                                 } else {
                                     auth.signInWithEmailAndPassword(email, password).await()
                                 }
@@ -203,6 +205,17 @@ fun AuthScreen(auth: FirebaseAuth) {
                     }) {
                         Text(androidx.compose.ui.res.stringResource(R.string.forgot_password))
                     }
+                }
+
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                OutlinedButton(
+                    onClick = onGuest,
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(Icons.Default.Videocam, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Continue to instant calling")
                 }
             }
         }
