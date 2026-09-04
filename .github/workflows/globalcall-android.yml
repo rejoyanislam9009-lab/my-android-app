@@ -8,9 +8,14 @@ on:
       - 'build.gradle.kts'
       - 'settings.gradle.kts'
       - 'gradle.properties'
+      - '.github/workflows/globalcall-android.yml'
   push:
     branches:
       - feature/global-video-calling-app
+
+concurrency:
+  group: globalcall-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
   build:
