@@ -9,6 +9,7 @@ This project is for lawful VPN use, privacy, remote access, testing, and routing
 ## Current MVP
 
 - Android 7.0+ (`minSdk 24`)
+- Compiles and targets Android 16 / API 36
 - WireGuard userspace backend via `com.wireguard.android:tunnel:1.0.20260102`
 - Android VPN consent flow using `VpnService.prepare()`
 - Connect / disconnect controls
@@ -19,7 +20,7 @@ This project is for lawful VPN use, privacy, remote access, testing, and routing
 
 ## Build
 
-The project uses Android Gradle Plugin 8.8.2, Gradle 8.10.2, and JDK 17.
+The project uses Android Gradle Plugin 8.13.2, Gradle 8.13, and JDK 17.
 
 ```bash
 gradle :app:assembleDebug
