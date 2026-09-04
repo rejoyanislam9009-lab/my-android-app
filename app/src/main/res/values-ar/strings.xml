@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GlobalCall</string>
+    <string name="welcome">تواصل وجهاً لوجه من أي مكان.</string>
+    <string name="email">البريد الإلكتروني</string>
+    <string name="password">كلمة المرور</string>
+    <string name="display_name">الاسم</string>
+    <string name="sign_in">تسجيل الدخول</string>
+    <string name="create_account">إنشاء حساب</string>
+    <string name="people">الأشخاص</string>
+    <string name="search_people">البحث عن أشخاص</string>
+    <string name="video_call">مكالمة فيديو</string>
+    <string name="incoming_call">مكالمة فيديو واردة</string>
+    <string name="accept">قبول</string>
+    <string name="decline">رفض</string>
+    <string name="end_call">إنهاء المكالمة</string>
+    <string name="logout">تسجيل الخروج</string>
+</resources>
