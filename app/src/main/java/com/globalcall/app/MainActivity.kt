@@ -4,6 +4,20 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -11,7 +25,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.model.CallSession
 import com.globalcall.app.ui.AuthScreen
@@ -70,73 +89,164 @@ data class ExternalCallRequest(
     val action: String
 )
 
+private data class CloudRuntime(
+    val auth: FirebaseAuth,
+    val repository: GlobalCallRepository
+)
+
 @Composable
 private fun GlobalCallApp(
     externalCallRequest: ExternalCallRequest?,
     onExternalCallHandled: () -> Unit
 ) {
-    val context = LocalContext.current.applicationContext
-    val firebaseApp = remember {
-        FirebaseApp.getApps(context).firstOrNull()
-            ?: FirebaseApp.initializeApp(
-                context,
-                FirebaseOptions.Builder()
-                    .setApiKey(BuildConfig.FIREBASE_API_KEY)
-                    .setApplicationId(BuildConfig.FIREBASE_APP_ID)
-                    .setProjectId(BuildConfig.FIREBASE_PROJECT_ID)
-                    .setGcmSenderId(BuildConfig.FIREBASE_SENDER_ID)
-                    .setStorageBucket(BuildConfig.FIREBASE_STORAGE_BUCKET)
-                    .build()
-            )
-    }
-
-    val auth = remember(firebaseApp) { FirebaseAuth.getInstance(firebaseApp) }
-    val repository = remember(firebaseApp, auth) {
-        GlobalCallRepository(
-            auth = auth,
-            db = FirebaseFirestore.getInstance(firebaseApp)
-        )
-    }
     val scope = rememberCoroutineScope()
-    var currentUser by remember { mutableStateOf(auth.currentUser) }
-    var guestMode by remember { mutableStateOf(false) }
+    var cloudMode by remember { mutableStateOf(false) }
     var callSession by remember { mutableStateOf<CallSession?>(null) }
+    var activeRepository by remember { mutableStateOf<GlobalCallRepository?>(null) }
 
-    DisposableEffect(auth) {
-        val listener = FirebaseAuth.AuthStateListener {
-            currentUser = it.currentUser
-            if (it.currentUser != null) guestMode = false
-        }
-        auth.addAuthStateListener(listener)
-        onDispose { auth.removeAuthStateListener(listener) }
-    }
-
-    when {
-        callSession != null -> CallScreen(
-            session = requireNotNull(callSession),
-            repository = repository,
+    val session = callSession
+    if (session != null) {
+        CallScreen(
+            session = session,
+            repository = activeRepository,
             onFinish = { updateServer ->
-                val callId = callSession?.callId
+                val repository = activeRepository
                 callSession = null
-                if (updateServer && currentUser != null && callId != null && !callId.startsWith("instant-")) {
-                    scope.launch { repository.endCall(callId) }
+                activeRepository = null
+                if (updateServer && repository != null && !session.callId.startsWith("instant-")) {
+                    scope.launch { repository.endCall(session.callId) }
                 }
             }
         )
+        return
+    }
 
-        currentUser == null && guestMode -> GuestReadyScreen(
-            onJoinCall = { callSession = it },
-            onSignIn = { guestMode = false }
+    if (!cloudMode) {
+        GuestReadyScreen(
+            onJoinCall = {
+                activeRepository = null
+                callSession = it
+            },
+            onSignIn = { cloudMode = true }
         )
+        return
+    }
 
-        currentUser == null -> AuthScreen(auth, onGuest = { guestMode = true })
+    CloudAccountHost(
+        externalCallRequest = externalCallRequest,
+        onExternalCallHandled = onExternalCallHandled,
+        onBackToInstant = { cloudMode = false },
+        onJoinCall = { repository, sessionToJoin ->
+            activeRepository = repository
+            callSession = sessionToJoin
+        }
+    )
+}
 
-        else -> ReadyHomeScreen(
-            auth = auth,
-            repository = repository,
+@Composable
+private fun CloudAccountHost(
+    externalCallRequest: ExternalCallRequest?,
+    onExternalCallHandled: () -> Unit,
+    onBackToInstant: () -> Unit,
+    onJoinCall: (GlobalCallRepository, CallSession) -> Unit
+) {
+    val context = LocalContext.current.applicationContext
+    val runtimeResult = remember {
+        runCatching {
+            val firebaseApp = FirebaseApp.getApps(context).firstOrNull()
+                ?: FirebaseApp.initializeApp(
+                    context,
+                    FirebaseOptions.Builder()
+                        .setApiKey(BuildConfig.FIREBASE_API_KEY)
+                        .setApplicationId(BuildConfig.FIREBASE_APP_ID)
+                        .setProjectId(BuildConfig.FIREBASE_PROJECT_ID)
+                        .setGcmSenderId(BuildConfig.FIREBASE_SENDER_ID)
+                        .setStorageBucket(BuildConfig.FIREBASE_STORAGE_BUCKET)
+                        .build()
+                )
+            val auth = FirebaseAuth.getInstance(firebaseApp)
+            CloudRuntime(
+                auth = auth,
+                repository = GlobalCallRepository(
+                    auth = auth,
+                    db = FirebaseFirestore.getInstance(firebaseApp)
+                )
+            )
+        }
+    }
+
+    val runtime = runtimeResult.getOrNull()
+    if (runtime == null) {
+        CloudUnavailableScreen(
+            message = runtimeResult.exceptionOrNull()?.message.orEmpty(),
+            onBack = onBackToInstant
+        )
+        return
+    }
+
+    var currentUser by remember(runtime.auth) { mutableStateOf(runtime.auth.currentUser) }
+    DisposableEffect(runtime.auth) {
+        val listener = FirebaseAuth.AuthStateListener { currentUser = it.currentUser }
+        runtime.auth.addAuthStateListener(listener)
+        onDispose { runtime.auth.removeAuthStateListener(listener) }
+    }
+
+    if (currentUser == null) {
+        AuthScreen(runtime.auth, onGuest = onBackToInstant)
+    } else {
+        ReadyHomeScreen(
+            auth = runtime.auth,
+            repository = runtime.repository,
             externalCallRequest = externalCallRequest,
             onExternalCallHandled = onExternalCallHandled,
-            onJoinCall = { callSession = it }
+            onJoinCall = { onJoinCall(runtime.repository, it) }
         )
+    }
+}
+
+@Composable
+private fun CloudUnavailableScreen(
+    message: String,
+    onBack: () -> Unit
+) {
+    Surface(Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                Icons.Default.CloudOff,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "Cloud account unavailable",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Instant voice and video calling is still available. Cloud account services could not start on this device.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+            if (message.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    message.take(180),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+            Button(onClick = onBack) { Text("Continue to calling") }
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onBack) { Text("Back") }
+        }
     }
 }
