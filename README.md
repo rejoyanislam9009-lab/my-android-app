@@ -1,6 +1,6 @@
 # Bangla VPN (Android + WireGuard)
 
-An Android WireGuard client for connecting to an authorized VPN server that you control. The app accepts a standard client private key, address, DNS, server public key, endpoint, and AllowedIPs, then asks Android for normal VPN permission before bringing the tunnel up.
+An Android WireGuard client for connecting to Bangladesh-hosted VPN infrastructure that you own or are authorized to operate. The normal user flow is intentionally simple: choose a preconfigured server and tap **CONNECT**.
 
 ## Important scope
 
@@ -12,20 +12,41 @@ This project is for lawful VPN use, privacy, remote access, testing, and routing
 - Compiles and targets Android 16 / API 36
 - WireGuard userspace backend via `com.wireguard.android:tunnel:1.0.20260102`
 - Android VPN consent flow using `VpnService.prepare()`
-- Polished Bangladesh-themed UI
-- Green shield + red-accent launcher icon
-- `Bangladesh Primary` authorized server profile slot
+- Bangladesh-themed UI and launcher icon
+- Three selectable server slots: `Bangladesh 1`, `Bangladesh 2`, `Bangladesh 3`
+- One-tap user flow: server dropdown -> CONNECT
+- No manual endpoint/key fields in the normal UI
 - Connect / disconnect controls
-- Full-tunnel support with `0.0.0.0/0, ::/0`
-- Keys are entered at runtime and are not persisted by the MVP
-- `.conf`, keystore, and environment-secret files are ignored by Git
+- IPv4 full tunnel with `0.0.0.0/0`
 - GitHub Actions debug APK build
 
-## Bangladesh Primary server profile
+## Preconfigured server values
 
-The app now contains a `Bangladesh Primary` profile in `ServerProfiles.kt`. Its real endpoint and WireGuard public key are intentionally left out of GitHub. To make it live, provision a VPS you own or are authorized to use with a public IP that is actually geolocated in Bangladesh, then enter the server endpoint and public key in the app.
+Server values are injected into `BuildConfig` from environment variables. The GitHub Actions workflow reads the same names from repository Actions secrets.
 
-Do not commit server or client private keys to this repository.
+For each server slot `1`, `2`, and `3`, configure:
+
+```text
+BD_VPN_1_NAME
+BD_VPN_1_ENDPOINT
+BD_VPN_1_SERVER_PUBLIC_KEY
+BD_VPN_1_CLIENT_PRIVATE_KEY
+BD_VPN_1_CLIENT_ADDRESS
+```
+
+Repeat with `_2_` and `_3_` for the other server slots.
+
+Example endpoint format:
+
+```text
+203.0.113.10:51820
+```
+
+If a slot is missing any required value, the app displays it as `Setup pending` and refuses to connect with that incomplete profile.
+
+### Security note
+
+Do not commit live private keys to the repository. For a single private/test build, build-time secrets can provide a simple one-tap experience. For a real multi-user production VPN, do **not** distribute one shared client private key inside the APK; use secure per-device enrollment/provisioning instead.
 
 ## Build
 
@@ -43,17 +64,17 @@ app/build/outputs/apk/debug/app-debug.apk
 
 ## Server
 
-See [`server/ubuntu-wireguard.md`](server/ubuntu-wireguard.md) for a standard Ubuntu WireGuard server configuration. To use a Bangladesh egress IP for legitimate routing, the VPS itself needs a public IP geolocated in Bangladesh.
+See [`server/ubuntu-wireguard.md`](server/ubuntu-wireguard.md) and [`server/bootstrap-wireguard.sh`](server/bootstrap-wireguard.sh) for an authorized Ubuntu WireGuard server setup. For Bangladesh egress, the VPS itself needs a public IP actually geolocated in Bangladesh.
 
 ## Before production
 
 A production release should add:
 
 - secure account/enrollment API
-- per-device keys and peer provisioning
+- per-device WireGuard keys and peer provisioning
 - key rotation and peer revocation
-- encrypted local secret storage if credentials are persisted
-- multiple authorized server locations and health checks
+- encrypted local secret storage where needed
+- server health checks and automatic failover
 - abuse controls and rate limits
 - kill-switch / always-on behavior where appropriate
 - DNS leak and IPv6 testing
