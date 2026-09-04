@@ -27,12 +27,13 @@ import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.model.CallSession
 import io.livekit.android.LiveKit
 import io.livekit.android.events.RoomEvent
+import io.livekit.android.events.collect
+import io.livekit.android.renderer.SurfaceViewRenderer
 import io.livekit.android.room.Room
 import io.livekit.android.room.track.Track
 import io.livekit.android.room.track.VideoTrack
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.webrtc.SurfaceViewRenderer
 
 @Composable
 fun CallScreen(
