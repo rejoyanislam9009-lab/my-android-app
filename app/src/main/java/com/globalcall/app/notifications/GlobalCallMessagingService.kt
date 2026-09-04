@@ -17,6 +17,7 @@ import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 import com.globalcall.app.MainActivity
 import com.globalcall.app.data.GlobalCallRepository
+import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -31,14 +32,23 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onNewToken(token: String) {
-        if (FirebaseAuth.getInstance().currentUser != null) {
+        val app = firebaseAppOrNull(this) ?: return
+        val auth = runCatching { FirebaseAuth.getInstance(app) }.getOrNull() ?: return
+        if (auth.currentUser != null) {
             serviceScope.launch {
-                runCatching { GlobalCallRepository().saveFcmToken(token) }
+                runCatching {
+                    GlobalCallRepository(
+                        auth = auth,
+                        db = FirebaseFirestore.getInstance(app)
+                    ).saveFcmToken(token)
+                }
             }
         }
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        if (firebaseAppOrNull(this) == null) return
+
         val data = message.data
         if (data["type"] != "incoming_call") return
 
@@ -161,10 +171,14 @@ class CallActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_DECLINE) return
         val callId = intent.getStringExtra(EXTRA_CALL_ID).orEmpty()
-        if (callId.isBlank() || FirebaseAuth.getInstance().currentUser == null) return
+        if (callId.isBlank()) return
+
+        val app = firebaseAppOrNull(context) ?: return
+        val auth = runCatching { FirebaseAuth.getInstance(app) }.getOrNull() ?: return
+        if (auth.currentUser == null) return
 
         val pending = goAsync()
-        FirebaseFirestore.getInstance().collection("calls").document(callId)
+        FirebaseFirestore.getInstance(app).collection("calls").document(callId)
             .update(
                 mapOf(
                     "status" to "declined",
@@ -183,3 +197,7 @@ class CallActionReceiver : BroadcastReceiver() {
         const val EXTRA_CALL_ID = "call_id"
     }
 }
+
+private fun firebaseAppOrNull(context: Context): FirebaseApp? =
+    FirebaseApp.getApps(context).firstOrNull()
+        ?: runCatching { FirebaseApp.initializeApp(context) }.getOrNull()
