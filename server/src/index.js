@@ -11,14 +11,10 @@ import { AccessToken } from 'livekit-server-sdk';
 
 const required = ['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'];
 for (const key of required) {
-  if (!process.env[key]) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
+  if (!process.env[key]) throw new Error(`Missing required environment variable: ${key}`);
 }
 
-if (!getApps().length) {
-  initializeApp({ credential: applicationDefault() });
-}
+if (!getApps().length) initializeApp({ credential: applicationDefault() });
 
 const auth = getAuth();
 const db = getFirestore();
@@ -31,9 +27,7 @@ app.use(cors({ origin: false }));
 app.use(express.json({ limit: '16kb' }));
 app.use(rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false }));
 
-app.get('/health', (_req, res) => {
-  res.json({ ok: true, service: 'globalcall-api' });
-});
+app.get('/health', (_req, res) => res.json({ ok: true, service: 'globalcall-api' }));
 
 async function authenticatedUser(req) {
   const authHeader = req.headers.authorization || '';
@@ -46,16 +40,11 @@ async function authenticatedUser(req) {
 }
 
 async function createParticipantToken({ uid, name, roomName }) {
-  const accessToken = new AccessToken(
-    process.env.LIVEKIT_API_KEY,
-    process.env.LIVEKIT_API_SECRET,
-    {
-      identity: uid,
-      name: name || uid,
-      ttl: '10m'
-    }
-  );
-
+  const accessToken = new AccessToken(process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET, {
+    identity: uid,
+    name: name || uid,
+    ttl: '10m'
+  });
   accessToken.addGrant({
     roomJoin: true,
     room: roomName,
@@ -63,7 +52,6 @@ async function createParticipantToken({ uid, name, roomName }) {
     canSubscribe: true,
     canPublishData: true
   });
-
   return accessToken.toJwt();
 }
 
@@ -77,22 +65,22 @@ app.post('/api/calls/start', async (req, res) => {
       return res.status(400).json({ error: 'Invalid callee' });
     }
 
-    const [callerSnap, calleeSnap, callerBlockSnap, calleeBlockSnap] = await Promise.all([
+    const [callerSnap, calleeSnap, deviceSnap, callerBlockSnap, calleeBlockSnap] = await Promise.all([
       db.collection('users').doc(decoded.uid).get(),
       db.collection('users').doc(calleeUid).get(),
+      db.collection('devices').doc(calleeUid).get(),
       db.collection('blocks').doc(`${decoded.uid}_${calleeUid}`).get(),
       db.collection('blocks').doc(`${calleeUid}_${decoded.uid}`).get()
     ]);
 
-    if (!calleeSnap.exists) {
-      return res.status(404).json({ error: 'User not found' });
-    }
+    if (!calleeSnap.exists) return res.status(404).json({ error: 'User not found' });
     if (callerBlockSnap.exists || calleeBlockSnap.exists) {
       return res.status(403).json({ error: 'Calling is unavailable for this contact' });
     }
 
     const caller = callerSnap.data() || {};
     const callee = calleeSnap.data() || {};
+    const device = deviceSnap.data() || {};
     const callerName = String(caller.displayName || decoded.name || decoded.email || 'GlobalCall user');
     const calleeName = String(callee.displayName || callee.email || 'GlobalCall user');
 
@@ -111,7 +99,7 @@ app.post('/api/calls/start', async (req, res) => {
       updatedAt: FieldValue.serverTimestamp()
     });
 
-    const fcmToken = String(callee.fcmToken || '');
+    const fcmToken = String(device.fcmToken || '');
     if (fcmToken) {
       try {
         await messaging.send({
@@ -123,22 +111,14 @@ app.post('/api/calls/start', async (req, res) => {
             callerName,
             video: String(video)
           },
-          android: {
-            priority: 'high',
-            ttl: 60_000
-          }
+          android: { priority: 'high', ttl: 60_000 }
         });
       } catch (pushError) {
         console.warn('FCM ringing notification failed', pushError?.message || pushError);
       }
     }
 
-    const participantToken = await createParticipantToken({
-      uid: decoded.uid,
-      name: callerName,
-      roomName
-    });
-
+    const participantToken = await createParticipantToken({ uid: decoded.uid, name: callerName, roomName });
     return res.status(201).json({
       callId: callRef.id,
       serverUrl: process.env.LIVEKIT_URL,
@@ -154,30 +134,18 @@ app.post('/api/token', async (req, res) => {
   try {
     const decoded = await authenticatedUser(req);
     const callId = String(req.body?.callId || '').trim();
-
-    if (!/^[A-Za-z0-9_-]{8,128}$/.test(callId)) {
-      return res.status(400).json({ error: 'Invalid callId' });
-    }
+    if (!/^[A-Za-z0-9_-]{8,128}$/.test(callId)) return res.status(400).json({ error: 'Invalid callId' });
 
     const callSnap = await db.collection('calls').doc(callId).get();
-    if (!callSnap.exists) {
-      return res.status(404).json({ error: 'Call not found' });
-    }
+    if (!callSnap.exists) return res.status(404).json({ error: 'Call not found' });
 
     const call = callSnap.data();
     const participantUids = Array.isArray(call.participantUids) ? call.participantUids : [];
-    if (!participantUids.includes(decoded.uid)) {
-      return res.status(403).json({ error: 'Not a participant in this call' });
-    }
-
-    if (!['ringing', 'accepted'].includes(call.status)) {
-      return res.status(409).json({ error: 'Call is no longer joinable' });
-    }
+    if (!participantUids.includes(decoded.uid)) return res.status(403).json({ error: 'Not a participant in this call' });
+    if (!['ringing', 'accepted'].includes(call.status)) return res.status(409).json({ error: 'Call is no longer joinable' });
 
     const roomName = String(call.roomName || '');
-    if (!roomName) {
-      return res.status(500).json({ error: 'Call room is missing' });
-    }
+    if (!roomName) return res.status(500).json({ error: 'Call room is missing' });
 
     const participantToken = await createParticipantToken({
       uid: decoded.uid,
@@ -185,10 +153,7 @@ app.post('/api/token', async (req, res) => {
       roomName
     });
 
-    return res.json({
-      serverUrl: process.env.LIVEKIT_URL,
-      participantToken
-    });
+    return res.json({ serverUrl: process.env.LIVEKIT_URL, participantToken });
   } catch (error) {
     console.error('token endpoint failed', error);
     return res.status(error.status || 401).json({ error: error.message || 'Unauthorized or token generation failed' });
@@ -196,6 +161,4 @@ app.post('/api/token', async (req, res) => {
 });
 
 const port = Number(process.env.PORT || 8080);
-app.listen(port, '0.0.0.0', () => {
-  console.log(`GlobalCall API listening on :${port}`);
-});
+app.listen(port, '0.0.0.0', () => console.log(`GlobalCall API listening on :${port}`));
