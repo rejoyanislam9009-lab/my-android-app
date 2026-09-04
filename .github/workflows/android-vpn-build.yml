@@ -1,0 +1,57 @@
+name: Android VPN Build
+
+on:
+  push:
+    branches:
+      - feature/bangladesh-wireguard-vpn-mvp
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: android-vpn-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      BD_VPN_1_NAME: ${{ secrets.BD_VPN_1_NAME }}
+      BD_VPN_1_ENDPOINT: ${{ secrets.BD_VPN_1_ENDPOINT }}
+      BD_VPN_1_SERVER_PUBLIC_KEY: ${{ secrets.BD_VPN_1_SERVER_PUBLIC_KEY }}
+      BD_VPN_1_CLIENT_PRIVATE_KEY: ${{ secrets.BD_VPN_1_CLIENT_PRIVATE_KEY }}
+      BD_VPN_1_CLIENT_ADDRESS: ${{ secrets.BD_VPN_1_CLIENT_ADDRESS }}
+      BD_VPN_2_NAME: ${{ secrets.BD_VPN_2_NAME }}
+      BD_VPN_2_ENDPOINT: ${{ secrets.BD_VPN_2_ENDPOINT }}
+      BD_VPN_2_SERVER_PUBLIC_KEY: ${{ secrets.BD_VPN_2_SERVER_PUBLIC_KEY }}
+      BD_VPN_2_CLIENT_PRIVATE_KEY: ${{ secrets.BD_VPN_2_CLIENT_PRIVATE_KEY }}
+      BD_VPN_2_CLIENT_ADDRESS: ${{ secrets.BD_VPN_2_CLIENT_ADDRESS }}
+      BD_VPN_3_NAME: ${{ secrets.BD_VPN_3_NAME }}
+      BD_VPN_3_ENDPOINT: ${{ secrets.BD_VPN_3_ENDPOINT }}
+      BD_VPN_3_SERVER_PUBLIC_KEY: ${{ secrets.BD_VPN_3_SERVER_PUBLIC_KEY }}
+      BD_VPN_3_CLIENT_PRIVATE_KEY: ${{ secrets.BD_VPN_3_CLIENT_PRIVATE_KEY }}
+      BD_VPN_3_CLIENT_ADDRESS: ${{ secrets.BD_VPN_3_CLIENT_ADDRESS }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Build debug APK
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: bangla-vpn-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
