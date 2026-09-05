@@ -17,6 +17,7 @@ import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 import com.globalcall.app.ChatActivity
 import com.globalcall.app.MainActivity
+import com.globalcall.app.calls.ActiveCallService
 import com.globalcall.app.data.GlobalCallRepository
 import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
@@ -28,6 +29,7 @@ import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
@@ -66,6 +68,15 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
                     )
                 }
             }
+            "call_waiting" -> {
+                val callId = data["callId"].orEmpty()
+                if (callId.isBlank()) return
+                showCallWaiting(
+                    callId = callId,
+                    callerName = data["callerName"].orEmpty().ifBlank { "GlobalCall user" },
+                    video = data["video"] != "false"
+                )
+            }
             "chat_message" -> {
                 val senderUid = data["senderUid"].orEmpty()
                 if (senderUid.isBlank()) return
@@ -89,26 +100,36 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
         val uid = auth.currentUser?.uid ?: return
         val db = FirebaseFirestore.getInstance(app)
         val userRef = db.collection("users").document(uid)
+
+        val localBusy = ActiveCallService.hasAnotherActiveCall(this, callId)
         val profile = runCatching { userRef.get().await() }.getOrNull()
         val state = profile?.getString("callState").orEmpty()
         val currentCallId = profile?.getString("currentCallId").orEmpty()
         val stateAt = profile?.getTimestamp("callStateUpdatedAt")?.seconds ?: 0L
         val age = ((System.currentTimeMillis() / 1000L) - stateAt).coerceAtLeast(0L)
-        val busy = currentCallId.isNotBlank() && currentCallId != callId && when (state) {
+        val serverBusy = currentCallId.isNotBlank() && currentCallId != callId && when (state) {
             "active" -> age < 6 * 60 * 60L
             "calling", "ringing" -> age < 2 * 60L
             else -> false
         }
 
-        if (busy) {
+        if (localBusy || serverBusy) {
+            showCallWaiting(callId, callerName, video)
+            // Keep the waiting alert visible briefly, then tell the caller that this
+            // user is on another call. Never replace/clear the existing active call.
+            delay(3_500)
             runCatching {
-                db.collection("calls").document(callId).update(
-                    mapOf(
-                        "status" to "busy",
-                        "endedAt" to FieldValue.serverTimestamp(),
-                        "updatedAt" to FieldValue.serverTimestamp()
-                    )
-                ).await()
+                val callRef = db.collection("calls").document(callId)
+                val call = callRef.get().await()
+                if (call.getString("status") == "ringing") {
+                    callRef.update(
+                        mapOf(
+                            "status" to "busy",
+                            "endedAt" to FieldValue.serverTimestamp(),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
             }
             return
         }
@@ -153,12 +174,45 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
             .build()
 
         val allowed = Build.VERSION.SDK_INT < 33 ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         if (allowed) NotificationManagerCompat.from(this).notify(senderUid.hashCode(), notification)
+    }
+
+    private fun showCallWaiting(callId: String, callerName: String, video: Boolean) {
+        createCallWaitingChannel()
+        val returnIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        }
+        val returnPending = PendingIntent.getActivity(
+            this,
+            callId.hashCode() xor 0xCA17,
+            returnIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, CALL_WAITING_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.sym_action_call)
+            .setContentTitle("Call waiting • $callerName")
+            .setContentText(
+                if (video) "Incoming video call while you're on another call"
+                else "Incoming voice call while you're on another call"
+            )
+            .setContentIntent(returnPending)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .setTimeoutAfter(15_000L)
+            .build()
+
+        val allowed = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (allowed) NotificationManagerCompat.from(this)
+            .notify(callId.hashCode() xor CALL_WAITING_NOTIFICATION_MASK, notification)
     }
 
     private fun showIncomingCall(
@@ -243,10 +297,32 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
             NotificationChannel(
                 MESSAGE_CHANNEL_ID,
                 "Messages",
-                NotificationManager.IMPORTANCE_DEFAULT
+                NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "GlobalCall chat messages"
                 enableVibration(true)
+            }
+        )
+    }
+
+    private fun createCallWaitingChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val sound = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val attributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CALL_WAITING_CHANNEL_ID,
+                "Call waiting",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts when someone calls while another GlobalCall is active"
+                setSound(sound, attributes)
+                enableVibration(true)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
             }
         )
     }
@@ -275,7 +351,9 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
 
     companion object {
         const val CALL_CHANNEL_ID = "globalcall_incoming_calls"
-        const val MESSAGE_CHANNEL_ID = "globalcall_messages"
+        const val MESSAGE_CHANNEL_ID = "globalcall_messages_v2"
+        const val CALL_WAITING_CHANNEL_ID = "globalcall_call_waiting_v1"
+        private const val CALL_WAITING_NOTIFICATION_MASK = 0x77A1
     }
 }
 
@@ -291,26 +369,39 @@ class CallActionReceiver : BroadcastReceiver() {
         val db = FirebaseFirestore.getInstance(app)
         val pending = goAsync()
 
-        db.runBatch { batch ->
-            batch.update(
-                db.collection("calls").document(callId),
-                mapOf(
-                    "status" to "declined",
-                    "endedAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            )
-            batch.set(
-                db.collection("users").document(uid),
-                mapOf(
-                    "callState" to "idle",
-                    "currentCallId" to "",
-                    "callStateUpdatedAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                ),
-                SetOptions.merge()
-            )
-        }.addOnCompleteListener {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching {
+                db.collection("calls").document(callId).update(
+                    mapOf(
+                        "status" to "declined",
+                        "endedAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+
+            // Only clear ringing state when this declined call is actually the user's
+            // current call. Declining a waiting call must never erase another active call.
+            runCatching {
+                val userRef = db.collection("users").document(uid)
+                db.runTransaction { tx ->
+                    val user = tx.get(userRef)
+                    val currentCallId = user.getString("currentCallId").orEmpty()
+                    if (currentCallId == callId) {
+                        tx.set(
+                            userRef,
+                            mapOf(
+                                "callState" to "idle",
+                                "currentCallId" to "",
+                                "callStateUpdatedAt" to FieldValue.serverTimestamp(),
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            ),
+                            SetOptions.merge()
+                        )
+                    }
+                }.await()
+            }
+
             NotificationManagerCompat.from(context).cancel(callId.hashCode())
             pending.finish()
         }
