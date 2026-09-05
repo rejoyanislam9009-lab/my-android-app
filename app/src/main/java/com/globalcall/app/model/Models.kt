@@ -9,6 +9,7 @@ data class AppUser(
     val bio: String = "",
     val photoUrl: String = "",
     val phoneLast4: String = "",
+    val callCode: String = "",
     val online: Boolean = false,
     val lastSeen: Timestamp? = null
 )
