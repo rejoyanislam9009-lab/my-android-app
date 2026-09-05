@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.util.Base64
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Chat
@@ -45,9 +47,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.globalcall.app.ChatActivity
+import com.globalcall.app.calls.ActiveCallService
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.media.WebRtcCallEngine
 import com.globalcall.app.model.CallSession
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -81,6 +85,9 @@ fun CallScreen(
     var mediaRetryNonce by remember(session.callId) { mutableIntStateOf(0) }
     var peerDisplayName by remember(session.callId) { mutableStateOf(session.peerName.ifBlank { "GlobalCall contact" }) }
     var peerPhotoData by remember(session.callId) { mutableStateOf("") }
+    var waitingCallId by remember(session.callId) { mutableStateOf("") }
+    var waitingCallerName by remember(session.callId) { mutableStateOf("") }
+    var waitingVideo by remember(session.callId) { mutableStateOf(false) }
 
     var permissionsGranted by remember(session.callId) {
         mutableStateOf(
@@ -92,10 +99,31 @@ fun CallScreen(
     fun finish(updateServer: Boolean) {
         if (!finished) {
             finished = true
+            if (!instant) ActiveCallService.stop(context, session.callId)
             engine?.close()
             engine = null
             if (!instant) scope.launch { runCatching { repository?.clearMyCallState(session.callId) } }
             onFinish(updateServer)
+        }
+    }
+
+    fun markWaitingBusy(callId: String) {
+        if (callId.isBlank()) return
+        scope.launch {
+            runCatching {
+                val ref = FirebaseFirestore.getInstance().collection("calls").document(callId)
+                val current = ref.get().await()
+                if (current.getString("status") == "ringing") {
+                    ref.update(
+                        mapOf(
+                            "status" to "busy",
+                            "endedAt" to FieldValue.serverTimestamp(),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
+            if (waitingCallId == callId) waitingCallId = ""
         }
     }
 
@@ -107,6 +135,12 @@ fun CallScreen(
                 putExtra(ChatActivity.EXTRA_PEER_NAME, peerDisplayName)
             }
         )
+    }
+
+    BackHandler(enabled = !instant && !finished) {
+        // Back during a real call means "minimize", not "destroy the activity".
+        // This prevents the WebRTC engine from being disposed and leaving stale busy state.
+        activity?.moveTaskToBack(true)
     }
 
     DisposableEffect(session.peerUid, repository) {
@@ -128,6 +162,50 @@ fun CallScreen(
                 }
             onDispose { registration.remove() }
         }
+    }
+
+    // Firestore fallback for call waiting. This works while the current call screen is
+    // alive even before server push is deployed. FCM provides the same alert in background.
+    DisposableEffect(session.callId, repository) {
+        val uid = repository?.currentUid
+        if (instant || repository == null || uid.isNullOrBlank()) {
+            onDispose { }
+        } else {
+            val registration = FirebaseFirestore.getInstance()
+                .collection("calls")
+                .whereArrayContains("participantUids", uid)
+                .addSnapshotListener { snapshot, _ ->
+                    val waiting = snapshot?.documents.orEmpty()
+                        .filter {
+                            it.id != session.callId &&
+                                it.getString("calleeUid") == uid &&
+                                it.getString("status") == "ringing"
+                        }
+                        .maxByOrNull { it.getTimestamp("createdAt")?.seconds ?: 0L }
+                    waitingCallId = waiting?.id.orEmpty()
+                    waitingCallerName = waiting?.getString("callerName").orEmpty()
+                        .ifBlank { "GlobalCall user" }
+                    waitingVideo = waiting?.getBoolean("video") ?: false
+                }
+            onDispose { registration.remove() }
+        }
+    }
+
+    LaunchedEffect(waitingCallId) {
+        val callId = waitingCallId
+        if (callId.isBlank()) return@LaunchedEffect
+        runCatching {
+            MediaPlayer.create(
+                context,
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            )?.apply {
+                setVolume(0.35f, 0.35f)
+                setOnCompletionListener { player -> runCatching { player.release() } }
+                start()
+            }
+        }
+        delay(5_000)
+        if (waitingCallId == callId) markWaitingBusy(callId)
     }
 
     DisposableEffect(activity, session.callId) {
@@ -205,6 +283,34 @@ fun CallScreen(
         onDispose {
             runCatching { ringback?.stop() }
             runCatching { ringback?.release() }
+        }
+    }
+
+    LaunchedEffect(session.callId, permissionsGranted) {
+        if (!instant && permissionsGranted) {
+            runCatching {
+                ActiveCallService.start(
+                    context = context,
+                    callId = session.callId,
+                    peerName = peerDisplayName,
+                    video = session.video,
+                    connected = callStatus == "accepted"
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(peerDisplayName, callStatus, connected, permissionsGranted) {
+        if (!instant && permissionsGranted) {
+            runCatching {
+                ActiveCallService.update(
+                    context = context,
+                    callId = session.callId,
+                    peerName = peerDisplayName,
+                    video = session.video,
+                    connected = connected || callStatus == "accepted"
+                )
+            }
         }
     }
 
@@ -398,6 +504,40 @@ fun CallScreen(
                         color = Color.White.copy(alpha = .78f),
                         style = MaterialTheme.typography.bodySmall
                     )
+                }
+            }
+        }
+
+        if (waitingCallId.isNotBlank()) {
+            Card(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = if (session.video) 116.dp else 28.dp, start = 16.dp, end = 16.dp)
+                    .fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = Color(0xF22A3342)),
+                shape = RoundedCornerShape(20.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(shape = CircleShape, color = Color(0xFF35D39A)) {
+                        Icon(
+                            if (waitingVideo) Icons.Default.Videocam else Icons.Default.Call,
+                            contentDescription = null,
+                            tint = Color(0xFF08110E),
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Call waiting", color = Color.White.copy(alpha = .72f), style = MaterialTheme.typography.labelMedium)
+                        Text(waitingCallerName, color = Color.White, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+                        Text("You're already on another call", color = Color.White.copy(alpha = .62f), style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = { markWaitingBusy(waitingCallId) }) {
+                        Text("Busy")
+                    }
                 }
             }
         }
