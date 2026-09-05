@@ -5,6 +5,42 @@ const { getMessaging } = require("firebase-admin/messaging");
 
 initializeApp();
 
+async function sendToUser(uid, data) {
+  const db = getFirestore();
+  const deviceRef = db.collection("devices").doc(uid);
+  const device = await deviceRef.get();
+  const token = String(device.get("fcmToken") || "");
+  if (!token) return false;
+
+  try {
+    await getMessaging().send({
+      token,
+      data,
+      android: {
+        priority: "high",
+        ttl: 60000,
+      },
+    });
+    return true;
+  } catch (error) {
+    const code = String(error && error.code ? error.code : "");
+    if (
+      code.includes("registration-token-not-registered") ||
+      code.includes("invalid-registration-token")
+    ) {
+      await deviceRef.set(
+        {
+          fcmToken: "",
+          tokenInvalidatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+    console.error("GlobalCall push failed", uid, code, error);
+    return false;
+  }
+}
+
 exports.pushIncomingCall = onDocumentCreated(
   {
     document: "calls/{callId}",
@@ -23,49 +59,48 @@ exports.pushIncomingCall = onDocumentCreated(
     const callId = event.params.callId;
     if (!calleeUid || !callerUid || !callId) return;
 
-    const db = getFirestore();
-    const deviceRef = db.collection("devices").doc(calleeUid);
-    const device = await deviceRef.get();
-    const token = String(device.get("fcmToken") || "");
-    if (!token) return;
+    const sent = await sendToUser(calleeUid, {
+      type: "incoming_call",
+      callId,
+      callerUid,
+      callerName,
+      video: String(call.video !== false),
+    });
 
-    try {
-      await getMessaging().send({
-        token,
-        data: {
-          type: "incoming_call",
-          callId,
-          callerUid,
-          callerName,
-          video: String(call.video !== false),
-        },
-        android: {
-          priority: "high",
-          ttl: 60000,
-        },
-      });
-
+    if (sent) {
       await snapshot.ref.set(
-        {
-          pushSentAt: FieldValue.serverTimestamp(),
-        },
+        { pushSentAt: FieldValue.serverTimestamp() },
         { merge: true }
       );
-    } catch (error) {
-      const code = String(error && error.code ? error.code : "");
-      if (
-        code.includes("registration-token-not-registered") ||
-        code.includes("invalid-registration-token")
-      ) {
-        await deviceRef.set(
-          {
-            fcmToken: "",
-            tokenInvalidatedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
-      }
-      console.error("GlobalCall incoming push failed", callId, code, error);
     }
+  }
+);
+
+exports.pushChatMessage = onDocumentCreated(
+  {
+    document: "conversations/{conversationId}/messages/{messageId}",
+    region: "us-central1",
+  },
+  async (event) => {
+    const snapshot = event.data;
+    if (!snapshot) return;
+
+    const message = snapshot.data() || {};
+    const senderUid = String(message.senderUid || "");
+    const receiverUid = String(message.receiverUid || "");
+    const text = String(message.text || "").slice(0, 180);
+    if (!senderUid || !receiverUid || !text) return;
+
+    const db = getFirestore();
+    const sender = await db.collection("users").doc(senderUid).get();
+    const senderName = String(sender.get("displayName") || "GlobalCall contact");
+
+    await sendToUser(receiverUid, {
+      type: "chat_message",
+      conversationId: event.params.conversationId,
+      senderUid,
+      senderName,
+      text,
+    });
   }
 );
