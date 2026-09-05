@@ -34,7 +34,9 @@ class GlobalCallRepository(
             phoneLast4 = doc.getString("phoneLast4").orEmpty(),
             callCode = doc.getString("callCode").orEmpty(),
             online = doc.getBoolean("online") ?: false,
-            lastSeen = doc.getTimestamp("lastSeen")
+            lastSeen = doc.getTimestamp("lastSeen"),
+            callState = doc.getString("callState").orEmpty().ifBlank { "idle" },
+            currentCallId = doc.getString("currentCallId").orEmpty()
         )
     }
 
@@ -56,6 +58,17 @@ class GlobalCallRepository(
 
     private fun connectionId(a: String, b: String): String =
         listOf(a, b).sorted().joinToString("__")
+
+    private fun isBusyProfile(doc: DocumentSnapshot): Boolean {
+        val state = doc.getString("callState").orEmpty()
+        if (state !in setOf("calling", "ringing", "active")) return false
+        val updated = doc.getTimestamp("callStateUpdatedAt")?.seconds ?: return false
+        val ageSeconds = ((System.currentTimeMillis() / 1000L) - updated).coerceAtLeast(0L)
+        return when (state) {
+            "active" -> ageSeconds < 6 * 60 * 60L
+            else -> ageSeconds < 2 * 60L
+        }
+    }
 
     suspend fun ensureMyCallCode(): String {
         val user = requireNotNull(auth.currentUser) { "Not signed in" }
@@ -205,7 +218,9 @@ class GlobalCallRepository(
             phoneLast4 = directory.getString("phoneLast4").orEmpty(),
             callCode = profile?.getString("callCode").orEmpty(),
             online = profile?.getBoolean("online") ?: false,
-            lastSeen = profile?.getTimestamp("lastSeen")
+            lastSeen = profile?.getTimestamp("lastSeen"),
+            callState = profile?.getString("callState").orEmpty().ifBlank { "idle" },
+            currentCallId = profile?.getString("currentCallId").orEmpty()
         )
     }
 
@@ -249,10 +264,7 @@ class GlobalCallRepository(
                 return@addSnapshotListener
             }
             val doc = snapshot?.documents.orEmpty()
-                .filter {
-                    it.getString("calleeUid") == uid &&
-                        it.getString("status") == "ringing"
-                }
+                .filter { it.getString("calleeUid") == uid && it.getString("status") == "ringing" }
                 .maxByOrNull { it.getTimestamp("createdAt")?.seconds ?: 0L }
             onChange(doc?.let {
                 CallInvite(
@@ -293,7 +305,7 @@ class GlobalCallRepository(
                     endedAt = doc.getTimestamp("endedAt")
                 )
             }.sortedByDescending { it.createdAt?.seconds ?: 0L }
-            onChange(calls.take(60))
+            onChange(calls.take(80))
         }
 
     fun observeCallStatus(callId: String, onChange: (String) -> Unit): ListenerRegistration =
@@ -311,9 +323,15 @@ class GlobalCallRepository(
         require(peer.uid.isNotBlank()) { "Missing contact" }
         val connection = db.collection("connections").document(connectionId(user.uid, peer.uid)).get().await()
         require(connection.exists()) { "Connect with this user before calling" }
+
         val livePeer = db.collection("users").document(peer.uid).get().await()
         require(livePeer.exists()) { "This GlobalCall account is unavailable" }
         require(livePeer.getBoolean("online") == true) { "This contact is offline right now" }
+        require(!isBusyProfile(livePeer)) { "This contact is already on another call" }
+
+        val myProfile = db.collection("users").document(user.uid).get().await()
+        require(!isBusyProfile(myProfile)) { "You already have another call in progress" }
+
         val blockedByMe = runCatching {
             db.collection("blocks").document("${user.uid}_${peer.uid}").get().await().exists()
         }.getOrDefault(false)
@@ -342,6 +360,7 @@ class GlobalCallRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
         ).await()
+        setMyCallState("calling", callRef.id)
 
         return CallSession(
             callId = callRef.id,
@@ -355,6 +374,19 @@ class GlobalCallRepository(
     }
 
     suspend fun acceptCall(invite: CallInvite): CallSession {
+        val uid = requireNotNull(currentUid) { "Not signed in" }
+        val me = db.collection("users").document(uid).get().await()
+        if (isBusyProfile(me) && me.getString("currentCallId").orEmpty() != invite.id) {
+            db.collection("calls").document(invite.id).update(
+                mapOf(
+                    "status" to "busy",
+                    "endedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            error("You already have another call in progress")
+        }
+
         db.collection("calls").document(invite.id).update(
             mapOf(
                 "status" to "accepted",
@@ -362,6 +394,7 @@ class GlobalCallRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
         ).await()
+        setMyCallState("active", invite.id)
         return CallSession(
             invite.id,
             invite.callerUid,
@@ -397,6 +430,20 @@ class GlobalCallRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
         ).await()
+        clearMyCallState(callId)
+    }
+
+    suspend fun markMissedCall(callId: String) {
+        runCatching {
+            db.collection("calls").document(callId).update(
+                mapOf(
+                    "status" to "missed",
+                    "endedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
+        clearMyCallState(callId)
     }
 
     suspend fun endCall(callId: String) {
@@ -409,6 +456,41 @@ class GlobalCallRepository(
                 )
             ).await()
         }
+        clearMyCallState(callId)
+    }
+
+    suspend fun setMyCallState(state: String, callId: String) {
+        val uid = currentUid ?: return
+        db.collection("users").document(uid).set(
+            mapOf(
+                "callState" to state,
+                "currentCallId" to callId,
+                "callStateUpdatedAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ),
+            SetOptions.merge()
+        ).await()
+    }
+
+    suspend fun clearMyCallState(callId: String = "") {
+        val uid = currentUid ?: return
+        val ref = db.collection("users").document(uid)
+        db.runTransaction { tx ->
+            val current = tx.get(ref)
+            val activeId = current.getString("currentCallId").orEmpty()
+            if (callId.isBlank() || activeId.isBlank() || activeId == callId) {
+                tx.set(
+                    ref,
+                    mapOf(
+                        "callState" to "idle",
+                        "currentCallId" to "",
+                        "callStateUpdatedAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    ),
+                    SetOptions.merge()
+                )
+            }
+        }.await()
     }
 
     suspend fun updateProfile(displayName: String, bio: String) {
@@ -441,18 +523,11 @@ class GlobalCallRepository(
         val callCode = ensureMyCallCode()
         val key = compactCode(callCode)
         db.collection("users").document(user.uid).set(
-            mapOf(
-                "photoData" to photoData,
-                "updatedAt" to FieldValue.serverTimestamp()
-            ),
+            mapOf("photoData" to photoData, "updatedAt" to FieldValue.serverTimestamp()),
             SetOptions.merge()
         ).await()
         db.collection("callCodes").document(key).set(
-            mapOf(
-                "uid" to user.uid,
-                "photoData" to photoData,
-                "updatedAt" to FieldValue.serverTimestamp()
-            ),
+            mapOf("uid" to user.uid, "photoData" to photoData, "updatedAt" to FieldValue.serverTimestamp()),
             SetOptions.merge()
         ).await()
         runCatching { publishPhoneDirectory() }
@@ -472,29 +547,46 @@ class GlobalCallRepository(
     }
 
     suspend fun setOnline(online: Boolean) {
-        // The background connection service owns offline state. The UI lifecycle may
-        // stop while the phone still has internet (screen off, another activity, call UI),
-        // so an ON_STOP event must never mark the account offline.
-        if (!online) return
-
         val user = auth.currentUser ?: return
+        val userRef = db.collection("users").document(user.uid)
+        if (!online) {
+            userRef.set(
+                mapOf(
+                    "online" to false,
+                    "lastSeen" to FieldValue.serverTimestamp(),
+                    "callState" to "idle",
+                    "currentCallId" to "",
+                    "callStateUpdatedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+            return
+        }
+
         val phone = user.phoneNumber
         val code = runCatching { ensureMyCallCode() }.getOrDefault("")
+        val existing = runCatching { userRef.get().await() }.getOrNull()
         val data = mutableMapOf<String, Any>(
             "uid" to user.uid,
             "displayName" to (user.displayName ?: phone ?: user.email.orEmpty()),
             "email" to user.email.orEmpty().lowercase(Locale.ROOT),
             "phoneLast4" to (
-                phone?.let {
-                    runCatching { PhoneDirectory.last4(PhoneDirectory.normalize(it)) }.getOrDefault("")
-                } ?: ""
+                phone?.let { runCatching { PhoneDirectory.last4(PhoneDirectory.normalize(it)) }.getOrDefault("") } ?: ""
             ),
             "online" to true,
             "lastSeen" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
         if (code.isNotBlank()) data["callCode"] = code
-        db.collection("users").document(user.uid).set(data, SetOptions.merge()).await()
+        if (existing != null && isBusyProfile(existing)) {
+            // Keep a live call state intact across activity recreation.
+        } else {
+            data["callState"] = "idle"
+            data["currentCallId"] = ""
+            data["callStateUpdatedAt"] = FieldValue.serverTimestamp()
+        }
+        userRef.set(data, SetOptions.merge()).await()
         runCatching { publishPhoneDirectory() }
     }
 
