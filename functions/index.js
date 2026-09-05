@@ -1,4 +1,4 @@
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
+const { onDocumentCreated, onDocumentUpdated } = require("firebase-functions/v2/firestore");
 const { initializeApp } = require("firebase-admin/app");
 const { getFirestore, FieldValue } = require("firebase-admin/firestore");
 const { getMessaging } = require("firebase-admin/messaging");
@@ -110,6 +110,69 @@ exports.pushChatMessage = onDocumentCreated(
         text,
       },
       24 * 60 * 60 * 1000
+    );
+  }
+);
+
+exports.syncCallState = onDocumentUpdated(
+  {
+    document: "calls/{callId}",
+    region: "us-central1",
+  },
+  async (event) => {
+    const before = event.data && event.data.before ? event.data.before.data() || {} : {};
+    const afterSnapshot = event.data && event.data.after ? event.data.after : null;
+    if (!afterSnapshot) return;
+    const after = afterSnapshot.data() || {};
+    if (before.status === after.status) return;
+
+    const callId = event.params.callId;
+    const participants = Array.isArray(after.participantUids) ? after.participantUids : [];
+    if (!callId || participants.length !== 2) return;
+
+    const db = getFirestore();
+    if (after.status === "accepted") {
+      const batch = db.batch();
+      for (const uid of participants) {
+        batch.set(
+          db.collection("users").doc(String(uid)),
+          {
+            callState: "active",
+            currentCallId: callId,
+            callStateUpdatedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+      await batch.commit();
+      return;
+    }
+
+    if (!["ended", "declined", "busy", "missed"].includes(String(after.status || ""))) return;
+
+    await Promise.all(
+      participants.map(async (rawUid) => {
+        const uid = String(rawUid || "");
+        if (!uid) return;
+        const userRef = db.collection("users").doc(uid);
+        await db.runTransaction(async (tx) => {
+          const user = await tx.get(userRef);
+          if (!user.exists) return;
+          const currentCallId = String(user.get("currentCallId") || "");
+          if (currentCallId && currentCallId !== callId) return;
+          tx.set(
+            userRef,
+            {
+              callState: "idle",
+              currentCallId: "",
+              callStateUpdatedAt: FieldValue.serverTimestamp(),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        });
+      })
     );
   }
 );
