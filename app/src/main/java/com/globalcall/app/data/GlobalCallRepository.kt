@@ -105,8 +105,10 @@ class GlobalCallRepository(
         val updated = doc.getTimestamp("callStateUpdatedAt")?.seconds ?: return false
         val ageSeconds = ((System.currentTimeMillis() / 1000L) - updated).coerceAtLeast(0L)
         return when (state) {
-            "active" -> ageSeconds < 6 * 60 * 60L
-            else -> ageSeconds < 2 * 60L
+            // ActiveCallService refreshes a real accepted call every 30 seconds.
+            // If that heartbeat disappears, do not leave the contact locked busy for hours.
+            "active" -> ageSeconds < 120L
+            else -> ageSeconds < 90L
         }
     }
 
@@ -690,7 +692,7 @@ class GlobalCallRepository(
         )
         if (code.isNotBlank()) data["callCode"] = code
         if (existing != null && isBusyProfile(existing)) {
-            // Keep a live call state intact across activity recreation.
+            // Keep a live, recently-heartbeating call state intact across activity recreation.
         } else {
             data["callState"] = "idle"
             data["currentCallId"] = ""
