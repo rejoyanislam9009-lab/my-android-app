@@ -1,84 +1,23 @@
 package com.globalcall.app.ui
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.CallMade
-import androidx.compose.material.icons.filled.CallMissed
-import androidx.compose.material.icons.filled.CallReceived
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Groups
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Logout
-import androidx.compose.material.icons.filled.PhoneInTalk
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Shield
-import androidx.compose.material.icons.filled.Tag
-import androidx.compose.material.icons.filled.Videocam
-import androidx.compose.material.icons.filled.VideocamOff
-import androidx.compose.material3.Badge
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.IconButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Snackbar
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.globalcall.app.BuildConfig
@@ -112,23 +51,13 @@ fun ReadyHomeScreen(
 
     LaunchedEffect(user.uid) {
         runCatching { repository.setOnline(true) }
+        runCatching { repository.publishPhoneDirectory() }
     }
 
     DisposableEffect(user.uid) {
-        val peopleReg = repository.observePeople(
-            onChange = { people = it },
-            onError = { message = "Direct directory is unavailable right now. Room-code calling is still ready." }
-        )
-        val callsReg = repository.observeCallHistory(
-            uid = user.uid,
-            onChange = { calls = it },
-            onError = { }
-        )
-        val incomingReg = repository.observeIncomingCall(
-            uid = user.uid,
-            onChange = { incoming = it },
-            onError = { }
-        )
+        val peopleReg = repository.observePeople(onChange = { people = it }, onError = { })
+        val callsReg = repository.observeCallHistory(user.uid, onChange = { calls = it }, onError = { })
+        val incomingReg = repository.observeIncomingCall(user.uid, onChange = { incoming = it }, onError = { })
         onDispose {
             peopleReg.remove()
             callsReg.remove()
@@ -139,22 +68,18 @@ fun ReadyHomeScreen(
     LaunchedEffect(externalCallRequest?.callId) {
         val request = externalCallRequest ?: return@LaunchedEffect
         if (request.action == MainActivity.ACTION_ANSWER) {
-            runCatching { repository.loadInvite(request.callId) }
-                .getOrNull()
-                ?.let { invite ->
-                    runCatching { repository.acceptCall(invite) }
-                        .onSuccess(onJoinCall)
-                        .onFailure { message = it.message }
-                }
+            runCatching { repository.loadInvite(request.callId) }.getOrNull()?.let { invite ->
+                runCatching { repository.acceptCall(invite) }
+                    .onSuccess(onJoinCall)
+                    .onFailure { message = it.message }
+            }
         }
         onExternalCallHandled()
     }
 
     fun instantSession(code: String, video: Boolean): CallSession {
         val clean = code.trim().uppercase().replace(Regex("[^A-Z0-9-]"), "").take(32)
-        val finalCode = clean.ifBlank {
-            UUID.randomUUID().toString().replace("-", "").take(10).uppercase()
-        }
+        val finalCode = clean.ifBlank { UUID.randomUUID().toString().replace("-", "").take(10).uppercase() }
         return CallSession(
             callId = "instant-$finalCode",
             peerUid = "",
@@ -166,15 +91,13 @@ fun ReadyHomeScreen(
         )
     }
 
-    fun startDirectCall(peer: AppUser, video: Boolean) {
+    fun directCall(peer: AppUser, video: Boolean) {
         if (busy) return
         scope.launch {
             busy = true
             runCatching { repository.startCall(peer, video) }
                 .onSuccess(onJoinCall)
-                .onFailure {
-                    message = it.message ?: "Could not start the direct call. You can use a room code instead."
-                }
+                .onFailure { message = it.message ?: "Could not start call" }
             busy = false
         }
     }
@@ -183,64 +106,48 @@ fun ReadyHomeScreen(
         Scaffold(
             containerColor = Color.Transparent,
             topBar = {
-                PremiumTopBar(
-                    name = user.displayName ?: user.email.orEmpty(),
-                    email = user.email.orEmpty(),
+                GlobalCallTopBar(
+                    name = user.displayName ?: user.phoneNumber ?: user.email.orEmpty(),
+                    subtitle = user.phoneNumber ?: user.email.orEmpty(),
                     onSearch = { tab = 1 }
                 )
             },
-            bottomBar = {
-                PremiumBottomBar(selected = tab, onSelected = { tab = it })
-            }
+            bottomBar = { GlobalCallBottomBar(tab) { tab = it } }
         ) { padding ->
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-            ) {
+            Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    0 -> ReadyCallsTab(
+                    0 -> CallsTab(
                         calls = calls,
+                        people = people,
                         currentUid = user.uid,
-                        people = people,
                         busy = busy,
-                        onDirectCall = ::startDirectCall,
+                        onDirectCall = ::directCall,
                         onInstantCall = { code, video -> onJoinCall(instantSession(code, video)) }
                     )
-
-                    1 -> ReadyPeopleTab(
+                    1 -> PeopleTab(
                         people = people,
                         busy = busy,
-                        onCall = ::startDirectCall,
-                        onInstantCall = { code, video -> onJoinCall(instantSession(code, video)) }
+                        repository = repository,
+                        onDirectCall = ::directCall
                     )
-
-                    else -> ReadyProfileTab(auth)
+                    else -> ProfileTab(auth)
                 }
-
                 message?.let {
                     Snackbar(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(16.dp),
-                        action = {
-                            TextButton(onClick = { message = null }) { Text("OK") }
-                        }
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                        action = { TextButton(onClick = { message = null }) { Text("OK") } }
                     ) { Text(it) }
                 }
             }
         }
 
         incoming?.let { invite ->
-            IncomingCallOverlay(
+            IncomingOverlay(
                 invite = invite,
                 onAnswer = {
                     scope.launch {
                         runCatching { repository.acceptCall(invite) }
-                            .onSuccess {
-                                incoming = null
-                                onJoinCall(it)
-                            }
+                            .onSuccess { incoming = null; onJoinCall(it) }
                             .onFailure { message = it.message }
                     }
                 },
@@ -254,231 +161,101 @@ fun ReadyHomeScreen(
 }
 
 @Composable
-private fun PremiumTopBar(
-    name: String,
-    email: String,
-    onSearch: () -> Unit
-) {
-    Surface(color = MaterialTheme.colorScheme.background.copy(alpha = 0.96f)) {
+private fun GlobalCallTopBar(name: String, subtitle: String, onSearch: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.background.copy(alpha = .97f)) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "GlobalCall",
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.ExtraBold
-                    )
+                    Text("GlobalCall", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
                     Spacer(Modifier.width(8.dp))
-                    Box(
-                        Modifier
-                            .size(8.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.tertiary)
-                    )
+                    Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF35D39A)))
                 }
-                Text(
-                    name.ifBlank { email },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Text(name.ifBlank { subtitle }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            FilledIconButton(
-                onClick = onSearch,
-                colors = IconButtonDefaults.filledIconButtonColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant
-                )
-            ) {
-                Icon(Icons.Default.Search, "Search people")
-            }
+            FilledIconButton(onClick = onSearch) { Icon(Icons.Default.Search, "Find people") }
         }
     }
 }
 
 @Composable
-private fun PremiumBottomBar(selected: Int, onSelected: (Int) -> Unit) {
-    NavigationBar(
-        containerColor = MaterialTheme.colorScheme.surface,
-        tonalElevation = 8.dp
-    ) {
-        NavigationBarItem(
-            selected = selected == 0,
-            onClick = { onSelected(0) },
-            icon = { Icon(Icons.Default.PhoneInTalk, null) },
-            label = { Text("Calls") }
-        )
-        NavigationBarItem(
-            selected = selected == 1,
-            onClick = { onSelected(1) },
-            icon = { Icon(Icons.Default.Groups, null) },
-            label = { Text("People") }
-        )
-        NavigationBarItem(
-            selected = selected == 2,
-            onClick = { onSelected(2) },
-            icon = { Icon(Icons.Default.AccountCircle, null) },
-            label = { Text("Profile") }
-        )
+private fun GlobalCallBottomBar(selected: Int, onSelected: (Int) -> Unit) {
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+        NavigationBarItem(selected == 0, { onSelected(0) }, { Icon(Icons.Default.PhoneInTalk, null) }, label = { Text("Calls") })
+        NavigationBarItem(selected == 1, { onSelected(1) }, { Icon(Icons.Default.Groups, null) }, label = { Text("People") })
+        NavigationBarItem(selected == 2, { onSelected(2) }, { Icon(Icons.Default.AccountCircle, null) }, label = { Text("Profile") })
     }
 }
 
 @Composable
-private fun ReadyCallsTab(
+private fun CallsTab(
     calls: List<CallRecord>,
-    currentUid: String,
     people: List<AppUser>,
+    currentUid: String,
     busy: Boolean,
     onDirectCall: (AppUser, Boolean) -> Unit,
     onInstantCall: (String, Boolean) -> Unit
 ) {
     var roomCode by remember { mutableStateOf("") }
-
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 28.dp),
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(30.dp),
-                colors = CardDefaults.cardColors(containerColor = Color.Transparent)
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(
-                            Brush.linearGradient(
-                                listOf(
-                                    MaterialTheme.colorScheme.primaryContainer,
-                                    MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.72f)
-                                )
-                            )
-                        )
-                        .padding(22.dp)
+            Card(shape = RoundedCornerShape(30.dp), colors = CardDefaults.cardColors(containerColor = Color.Transparent)) {
+                Column(
+                    Modifier.fillMaxWidth().background(
+                        Brush.linearGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.secondaryContainer))
+                    ).padding(22.dp)
                 ) {
-                    Column {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.13f)
-                            ) {
-                                Icon(
-                                    Icons.Default.PhoneInTalk,
-                                    null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.padding(11.dp).size(26.dp)
-                                )
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    "Call anyone, instantly",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
-                                Text(
-                                    "Private room code • Voice or video",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                    Text("Call anyone, instantly", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                    Text("Private voice & video rooms", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(18.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Button(onClick = { onInstantCall("", true) }, modifier = Modifier.weight(1f).height(56.dp), shape = RoundedCornerShape(18.dp)) {
+                            Icon(Icons.Default.Videocam, null); Spacer(Modifier.width(8.dp)); Text("Video")
                         }
-
-                        Spacer(Modifier.height(20.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            Button(
-                                onClick = { onInstantCall("", true) },
-                                modifier = Modifier.weight(1f).height(56.dp),
-                                shape = RoundedCornerShape(18.dp)
-                            ) {
-                                Icon(Icons.Default.Videocam, null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Video call", fontWeight = FontWeight.SemiBold)
-                            }
-                            FilledTonalButton(
-                                onClick = { onInstantCall("", false) },
-                                modifier = Modifier.weight(1f).height(56.dp),
-                                shape = RoundedCornerShape(18.dp)
-                            ) {
-                                Icon(Icons.Default.Call, null)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Voice call", fontWeight = FontWeight.SemiBold)
-                            }
+                        FilledTonalButton(onClick = { onInstantCall("", false) }, modifier = Modifier.weight(1f).height(56.dp), shape = RoundedCornerShape(18.dp)) {
+                            Icon(Icons.Default.Call, null); Spacer(Modifier.width(8.dp)); Text("Voice")
                         }
-
-                        Spacer(Modifier.height(14.dp))
-                        OutlinedTextField(
-                            value = roomCode,
-                            onValueChange = { roomCode = it.uppercase().take(32) },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Join with room code") },
-                            leadingIcon = { Icon(Icons.Default.Tag, null) },
-                            trailingIcon = {
-                                if (roomCode.isNotBlank()) {
-                                    Icon(Icons.Default.ContentCopy, null)
-                                }
-                            },
-                            keyboardOptions = KeyboardOptions(
-                                capitalization = KeyboardCapitalization.Characters
-                            ),
-                            singleLine = true,
-                            shape = RoundedCornerShape(18.dp)
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            OutlinedButton(
-                                enabled = roomCode.trim().length >= 4,
-                                onClick = { onInstantCall(roomCode, true) },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(16.dp)
-                            ) { Text("Join video") }
-                            OutlinedButton(
-                                enabled = roomCode.trim().length >= 4,
-                                onClick = { onInstantCall(roomCode, false) },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(16.dp)
-                            ) { Text("Join voice") }
-                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = roomCode,
+                        onValueChange = { roomCode = it.uppercase().take(32) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Join with room code") },
+                        leadingIcon = { Icon(Icons.Default.Tag, null) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp)
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        OutlinedButton(enabled = roomCode.trim().length >= 4, onClick = { onInstantCall(roomCode, true) }, modifier = Modifier.weight(1f)) { Text("Join video") }
+                        OutlinedButton(enabled = roomCode.trim().length >= 4, onClick = { onInstantCall(roomCode, false) }, modifier = Modifier.weight(1f)) { Text("Join voice") }
                     }
                 }
             }
         }
-
-        item {
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Recent calls",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                Text(
-                    if (calls.isEmpty()) "Ready" else "${calls.size} recent",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
+        item { Text("Recent calls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         if (calls.isEmpty()) {
-            item { EmptyCallsCard() }
+            item { EmptyCard(Icons.Default.History, "No calls yet", "Your recent calls will appear here.") }
         } else {
-            items(calls.take(24), key = { it.id }) { call ->
+            items(calls.take(30), key = { it.id }) { call ->
                 val peer = people.firstOrNull { it.uid == call.peerUid(currentUid) }
-                RecentCallRow(
-                    call = call,
-                    currentUid = currentUid,
-                    canRedial = peer != null && !busy,
+                ContactRow(
+                    title = call.peerName(currentUid).ifBlank { "GlobalCall user" },
+                    subtitle = when (call.status) {
+                        "ringing" -> "Calling…"
+                        "declined" -> "Declined"
+                        "accepted" -> "Connected"
+                        else -> "Completed"
+                    },
+                    online = false,
+                    enabled = peer != null && !busy,
                     onVoice = { peer?.let { onDirectCall(it, false) } },
                     onVideo = { peer?.let { onDirectCall(it, true) } }
                 )
@@ -488,144 +265,96 @@ private fun ReadyCallsTab(
 }
 
 @Composable
-private fun EmptyCallsCard() {
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-                Icon(
-                    Icons.Default.PhoneInTalk,
-                    null,
-                    modifier = Modifier.padding(12.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            }
-            Spacer(Modifier.width(14.dp))
-            Column {
-                Text("No calls yet", fontWeight = FontWeight.Bold)
-                Text(
-                    "Start a video or voice call above. Your recent calls will appear here.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun RecentCallRow(
-    call: CallRecord,
-    currentUid: String,
-    canRedial: Boolean,
-    onVoice: () -> Unit,
-    onVideo: () -> Unit
-) {
-    val outgoing = call.isOutgoing(currentUid)
-    val missed = call.status == "declined" && !outgoing
-    val directionIcon = when {
-        missed -> Icons.Default.CallMissed
-        outgoing -> Icons.Default.CallMade
-        else -> Icons.Default.CallReceived
-    }
-    val statusText = when {
-        missed -> "Missed call"
-        call.status == "declined" -> "Declined"
-        call.status == "ringing" -> if (outgoing) "Calling…" else "Incoming call"
-        call.status == "accepted" -> "Connected"
-        else -> "Completed"
-    }
-    val statusColor = if (missed || call.status == "declined") {
-        MaterialTheme.colorScheme.error
-    } else {
-        MaterialTheme.colorScheme.tertiary
-    }
-
-    ElevatedCard(
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface)
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box {
-                Avatar(call.peerName(currentUid).ifBlank { "GlobalCall" }, 52)
-                Surface(
-                    modifier = Modifier.align(Alignment.BottomEnd).size(20.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface
-                ) {
-                    Icon(
-                        directionIcon,
-                        null,
-                        modifier = Modifier.padding(3.dp),
-                        tint = statusColor
-                    )
-                }
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    call.peerName(currentUid).ifBlank { "GlobalCall user" },
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        statusText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = statusColor
-                    )
-                    Text(
-                        if (call.video) " • Video" else " • Voice",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            IconButton(enabled = canRedial, onClick = onVoice) {
-                Icon(Icons.Default.Call, "Voice call")
-            }
-            IconButton(enabled = canRedial, onClick = onVideo) {
-                Icon(Icons.Default.Videocam, "Video call")
-            }
-        }
-    }
-}
-
-@Composable
-private fun ReadyPeopleTab(
+private fun PeopleTab(
     people: List<AppUser>,
     busy: Boolean,
-    onCall: (AppUser, Boolean) -> Unit,
-    onInstantCall: (String, Boolean) -> Unit
+    repository: GlobalCallRepository,
+    onDirectCall: (AppUser, Boolean) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var search by remember { mutableStateOf("") }
-    var roomCode by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var phoneResult by remember { mutableStateOf<AppUser?>(null) }
+    var phoneMessage by remember { mutableStateOf<String?>(null) }
+    var searchingPhone by remember { mutableStateOf(false) }
     val filtered = remember(people, search) {
         people.filter {
-            search.isBlank() ||
-                it.displayName.contains(search, true) ||
-                it.email.contains(search, true)
+            search.isBlank() || it.displayName.contains(search, true) || it.email.contains(search, true) || it.phoneLast4.contains(search.filter(Char::isDigit))
         }
     }
-    val online = people.filter { it.online }.take(10)
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(start = 18.dp, end = 18.dp, top = 10.dp, bottom = 28.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(18.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        item {
+            ElevatedCard(shape = RoundedCornerShape(26.dp)) {
+                Column(Modifier.padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                            Icon(Icons.Default.Phone, null, modifier = Modifier.padding(11.dp), tint = MaterialTheme.colorScheme.primary)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Text("Find by phone number", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text("Like IMO — enter the verified international number", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = phone,
+                        onValueChange = { phone = it.take(18); phoneResult = null; phoneMessage = null },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Phone number") },
+                        placeholder = { Text("+8801... / +9665...") },
+                        leadingIcon = { Icon(Icons.Default.Phone, null) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp)
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                searchingPhone = true
+                                phoneMessage = null
+                                runCatching { repository.findUserByPhone(phone) }
+                                    .onSuccess {
+                                        phoneResult = it
+                                        if (it == null) phoneMessage = "No GlobalCall user found with this number"
+                                    }
+                                    .onFailure { phoneMessage = it.message ?: "Could not search this number" }
+                                searchingPhone = false
+                            }
+                        },
+                        enabled = !searchingPhone && phone.trim().startsWith("+") && phone.filter(Char::isDigit).length >= 8,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        if (searchingPhone) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        else { Icon(Icons.Default.PersonSearch, null); Spacer(Modifier.width(8.dp)); Text("Find GlobalCall user") }
+                    }
+                    phoneMessage?.let { Spacer(Modifier.height(10.dp)); Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        }
+
+        phoneResult?.let { result ->
+            item {
+                Text("Found", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                ContactRow(
+                    title = result.displayName.ifBlank { "GlobalCall user" },
+                    subtitle = if (result.phoneLast4.isNotBlank()) "Verified • •••• ${result.phoneLast4}" else "Verified GlobalCall user",
+                    online = result.online,
+                    enabled = !busy,
+                    onVoice = { onDirectCall(result, false) },
+                    onVideo = { onDirectCall(result, true) }
+                )
+            }
+        }
+
         item {
             OutlinedTextField(
                 value = search,
@@ -634,433 +363,123 @@ private fun ReadyPeopleTab(
                 placeholder = { Text("Search people") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 singleLine = true,
-                shape = RoundedCornerShape(20.dp)
+                shape = RoundedCornerShape(18.dp)
             )
         }
-
-        if (online.isNotEmpty()) {
-            item {
-                Column {
-                    Text(
-                        "Online now",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                        items(online, key = { it.uid }) { person ->
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.width(72.dp)
-                            ) {
-                                Box {
-                                    Avatar(person.displayName.ifBlank { person.email }, 58)
-                                    Surface(
-                                        modifier = Modifier.align(Alignment.BottomEnd).size(16.dp),
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.background
-                                    ) {
-                                        Box(
-                                            Modifier
-                                                .padding(3.dp)
-                                                .fillMaxSize()
-                                                .clip(CircleShape)
-                                                .background(MaterialTheme.colorScheme.tertiary)
-                                        )
-                                    }
-                                }
-                                Spacer(Modifier.height(6.dp))
-                                Text(
-                                    person.displayName.ifBlank { person.email.substringBefore('@') },
-                                    style = MaterialTheme.typography.labelMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Text(
-                if (filtered.isEmpty()) "Connect by code" else "People",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
+        item { Text("People", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         if (filtered.isEmpty()) {
-            item {
-                ElevatedCard(
-                    shape = RoundedCornerShape(24.dp),
-                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Column(Modifier.padding(18.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                                Icon(
-                                    Icons.Default.Groups,
-                                    null,
-                                    modifier = Modifier.padding(10.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Column {
-                                Text("Share one room code", fontWeight = FontWeight.Bold)
-                                Text(
-                                    "The other phone joins the same secure room.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(14.dp))
-                        OutlinedTextField(
-                            value = roomCode,
-                            onValueChange = { roomCode = it.uppercase().take(32) },
-                            modifier = Modifier.fillMaxWidth(),
-                            label = { Text("Shared room code") },
-                            leadingIcon = { Icon(Icons.Default.Tag, null) },
-                            singleLine = true,
-                            shape = RoundedCornerShape(18.dp)
-                        )
-                        Spacer(Modifier.height(10.dp))
-                        Button(
-                            enabled = roomCode.trim().length >= 4,
-                            onClick = { onInstantCall(roomCode, true) },
-                            modifier = Modifier.fillMaxWidth().height(52.dp),
-                            shape = RoundedCornerShape(18.dp)
-                        ) {
-                            Icon(Icons.Default.Videocam, null)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Join video room")
-                        }
-                    }
-                }
-            }
+            item { EmptyCard(Icons.Default.Groups, "No contacts yet", "Find someone by their verified phone number above.") }
         } else {
             items(filtered, key = { it.uid }) { person ->
-                ElevatedCard(
-                    shape = RoundedCornerShape(22.dp),
-                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface)
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(13.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box {
-                            Avatar(person.displayName.ifBlank { person.email }, 54)
-                            if (person.online) {
-                                Surface(
-                                    modifier = Modifier.align(Alignment.BottomEnd).size(16.dp),
-                                    shape = CircleShape,
-                                    color = MaterialTheme.colorScheme.surface
-                                ) {
-                                    Box(
-                                        Modifier
-                                            .padding(3.dp)
-                                            .fillMaxSize()
-                                            .clip(CircleShape)
-                                            .background(MaterialTheme.colorScheme.tertiary)
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                person.displayName.ifBlank { person.email },
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                if (person.online) "Online" else person.email,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (person.online) {
-                                    MaterialTheme.colorScheme.tertiary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        FilledIconButton(
-                            enabled = !busy,
-                            onClick = { onCall(person, false) },
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Icon(Icons.Default.Call, "Voice call")
-                        }
-                        Spacer(Modifier.width(6.dp))
-                        FilledIconButton(
-                            enabled = !busy,
-                            onClick = { onCall(person, true) },
-                            colors = IconButtonDefaults.filledIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            )
-                        ) {
-                            Icon(Icons.Default.Videocam, "Video call")
-                        }
-                    }
-                }
+                ContactRow(
+                    title = person.displayName.ifBlank { person.email.ifBlank { "GlobalCall user" } },
+                    subtitle = if (person.phoneLast4.isNotBlank()) "•••• ${person.phoneLast4}" else if (person.online) "Online" else "GlobalCall user",
+                    online = person.online,
+                    enabled = !busy,
+                    onVoice = { onDirectCall(person, false) },
+                    onVideo = { onDirectCall(person, true) }
+                )
             }
         }
     }
 }
 
 @Composable
-private fun ReadyProfileTab(auth: FirebaseAuth) {
-    val user = requireNotNull(auth.currentUser)
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(18.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
+private fun ContactRow(
+    title: String,
+    subtitle: String,
+    online: Boolean,
+    enabled: Boolean,
+    onVoice: () -> Unit,
+    onVideo: () -> Unit
+) {
+    ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+        Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box {
+                Surface(modifier = Modifier.size(54.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                    Box(contentAlignment = Alignment.Center) { Text(title.take(1).uppercase(), fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary) }
+                }
+                if (online) Box(Modifier.align(Alignment.BottomEnd).size(14.dp).clip(CircleShape).background(Color(0xFF35D39A)))
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            }
+            IconButton(enabled = enabled, onClick = onVoice) { Icon(Icons.Default.Call, "Voice call") }
+            IconButton(enabled = enabled, onClick = onVideo) { Icon(Icons.Default.Videocam, "Video call") }
+        }
+    }
+}
+
+@Composable
+private fun EmptyCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, subtitle: String) {
+    ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+        Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) { Icon(icon, null, modifier = Modifier.padding(12.dp)) }
+            Spacer(Modifier.width(14.dp))
+            Column { Text(title, fontWeight = FontWeight.Bold); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+    }
+}
+
+@Composable
+private fun ProfileTab(auth: FirebaseAuth) {
+    val user = auth.currentUser ?: return
+    val identifier = user.phoneNumber ?: user.email.orEmpty()
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        item {
-            Spacer(Modifier.height(4.dp))
-            Box {
-                Avatar(user.displayName ?: user.email.orEmpty(), 104)
-                Surface(
-                    modifier = Modifier.align(Alignment.BottomEnd).size(26.dp),
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    Box(
-                        Modifier
-                            .padding(5.dp)
-                            .fillMaxSize()
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.tertiary)
-                    )
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-            Text(
-                user.displayName ?: "GlobalCall user",
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.ExtraBold
-            )
-            Text(
-                user.email.orEmpty(),
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        Spacer(Modifier.height(28.dp))
+        Surface(modifier = Modifier.size(110.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+            Box(contentAlignment = Alignment.Center) { Text((user.displayName ?: identifier).take(1).uppercase(), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold) }
         }
-
-        item {
-            ElevatedCard(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(24.dp),
-                colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface)
-            ) {
-                Column(Modifier.padding(18.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Shield, null, tint = MaterialTheme.colorScheme.tertiary)
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("GlobalCall account", fontWeight = FontWeight.Bold)
-                            Text(
-                                "Voice and video calling ready",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Badge(containerColor = MaterialTheme.colorScheme.tertiary) {
-                            Text("ACTIVE")
-                        }
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 16.dp))
-                    ProfileStatusRow(
-                        icon = Icons.Default.CheckCircle,
-                        title = "Email",
-                        value = if (user.isEmailVerified) "Verified" else "Signed in"
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    ProfileStatusRow(
-                        icon = Icons.Default.Lock,
-                        title = "Calling",
-                        value = "Secure room transport"
-                    )
+        Spacer(Modifier.height(16.dp))
+        Text(user.displayName ?: "GlobalCall user", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+        Text(identifier, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.height(20.dp))
+        ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+            Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(if (user.phoneNumber != null) Icons.Default.VerifiedUser else Icons.Default.AccountCircle, null)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(if (user.phoneNumber != null) "Verified phone account" else "GlobalCall account", fontWeight = FontWeight.Bold)
+                    Text(if (user.phoneNumber != null) "People can find you by your verified number." else "Sign in with phone to become discoverable by number.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
-
-        item {
-            OutlinedButton(
-                onClick = { auth.signOut() },
-                modifier = Modifier.fillMaxWidth().height(54.dp),
-                shape = RoundedCornerShape(18.dp)
-            ) {
-                Icon(Icons.Default.Logout, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Sign out", fontWeight = FontWeight.SemiBold)
-            }
+        Spacer(Modifier.height(18.dp))
+        OutlinedButton(onClick = { auth.signOut() }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+            Icon(Icons.Default.Logout, null); Spacer(Modifier.width(8.dp)); Text("Sign out")
         }
     }
 }
 
 @Composable
-private fun ProfileStatusRow(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    value: String
-) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-            Icon(icon, null, modifier = Modifier.padding(8.dp).size(18.dp))
-        }
-        Spacer(Modifier.width(12.dp))
-        Column {
-            Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold)
-            Text(
-                value,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
-
-@Composable
-private fun IncomingCallOverlay(
-    invite: CallInvite,
-    onAnswer: () -> Unit,
-    onDecline: () -> Unit
-) {
-    val transition = rememberInfiniteTransition(label = "incoming-ring")
-    val pulse by transition.animateFloat(
-        initialValue = 0.96f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(850),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "incoming-pulse"
-    )
-
-    Surface(
-        modifier = Modifier.fillMaxSize(),
-        color = Color(0xFF07101E)
-    ) {
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.radialGradient(
-                        listOf(
-                            Color(0xFF1D3A78),
-                            Color(0xFF0B1527),
-                            Color(0xFF050912)
-                        ),
-                        radius = 1200f
-                    )
-                )
+private fun IncomingOverlay(invite: CallInvite, onAnswer: () -> Unit, onDecline: () -> Unit) {
+    Surface(Modifier.fillMaxSize(), color = Color(0xF20A0D13)) {
+        Column(
+            Modifier.fillMaxSize().padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 28.dp, vertical = 44.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    if (invite.video) "Incoming video call" else "Incoming voice call",
-                    color = Color.White.copy(alpha = 0.78f),
-                    style = MaterialTheme.typography.titleMedium
-                )
-                Spacer(Modifier.height(72.dp))
-
-                Box(contentAlignment = Alignment.Center) {
-                    Box(
-                        Modifier
-                            .size(154.dp)
-                            .graphicsLayer(scaleX = pulse, scaleY = pulse)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.08f))
-                    )
-                    Avatar(invite.callerName.ifBlank { "GlobalCall user" }, 118)
+            Text(if (invite.video) "Incoming video call" else "Incoming voice call", color = Color.White.copy(alpha = .7f))
+            Spacer(Modifier.height(20.dp))
+            Surface(modifier = Modifier.size(120.dp), shape = CircleShape, color = Color(0xFF263248)) {
+                Box(contentAlignment = Alignment.Center) { Text(invite.callerName.take(1).uppercase(), color = Color.White, style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold) }
+            }
+            Spacer(Modifier.height(18.dp))
+            Text(invite.callerName.ifBlank { "GlobalCall user" }, color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(44.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(44.dp)) {
+                FilledIconButton(onClick = onDecline, modifier = Modifier.size(70.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))) {
+                    Icon(Icons.Default.CallEnd, "Decline", modifier = Modifier.size(32.dp))
                 }
-
-                Spacer(Modifier.height(26.dp))
-                Text(
-                    invite.callerName.ifBlank { "GlobalCall user" },
-                    color = Color.White,
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.ExtraBold
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        if (invite.video) Icons.Default.Videocam else Icons.Default.Call,
-                        null,
-                        tint = Color(0xFF8DB5FF),
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        if (invite.video) "GlobalCall video • secure room" else "GlobalCall voice • secure room",
-                        color = Color.White.copy(alpha = 0.68f),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                FilledIconButton(onClick = onAnswer, modifier = Modifier.size(70.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFF35D07F))) {
+                    Icon(if (invite.video) Icons.Default.Videocam else Icons.Default.Call, "Answer", modifier = Modifier.size(32.dp))
                 }
-
-                Spacer(Modifier.weight(1f))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CallAction(
-                        icon = Icons.Default.Call,
-                        label = "Decline",
-                        background = Color(0xFFE94A4A),
-                        rotation = 135f,
-                        onClick = onDecline
-                    )
-                    CallAction(
-                        icon = if (invite.video) Icons.Default.Videocam else Icons.Default.PhoneInTalk,
-                        label = "Answer",
-                        background = Color(0xFF28C76F),
-                        onClick = onAnswer
-                    )
-                }
-                Spacer(Modifier.height(22.dp))
             }
         }
-    }
-}
-
-@Composable
-private fun CallAction(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    background: Color,
-    rotation: Float = 0f,
-    onClick: () -> Unit
-) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        FilledIconButton(
-            onClick = onClick,
-            modifier = Modifier.size(70.dp),
-            colors = IconButtonDefaults.filledIconButtonColors(
-                containerColor = background,
-                contentColor = Color.White
-            )
-        ) {
-            Icon(
-                icon,
-                label,
-                modifier = Modifier.size(30.dp).graphicsLayer(rotationZ = rotation)
-            )
-        }
-        Spacer(Modifier.height(9.dp))
-        Text(label, color = Color.White, fontWeight = FontWeight.SemiBold)
     }
 }
