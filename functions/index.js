@@ -5,7 +5,7 @@ const { getMessaging } = require("firebase-admin/messaging");
 
 initializeApp();
 
-async function sendToUser(uid, data) {
+async function sendToUser(uid, data, ttlMs = 60000) {
   const db = getFirestore();
   const deviceRef = db.collection("devices").doc(uid);
   const device = await deviceRef.get();
@@ -18,7 +18,7 @@ async function sendToUser(uid, data) {
       data,
       android: {
         priority: "high",
-        ttl: 60000,
+        ttl: ttlMs,
       },
     });
     return true;
@@ -59,13 +59,17 @@ exports.pushIncomingCall = onDocumentCreated(
     const callId = event.params.callId;
     if (!calleeUid || !callerUid || !callId) return;
 
-    const sent = await sendToUser(calleeUid, {
-      type: "incoming_call",
-      callId,
-      callerUid,
-      callerName,
-      video: String(call.video !== false),
-    });
+    const sent = await sendToUser(
+      calleeUid,
+      {
+        type: "incoming_call",
+        callId,
+        callerUid,
+        callerName,
+        video: String(call.video !== false),
+      },
+      60000
+    );
 
     if (sent) {
       await snapshot.ref.set(
@@ -95,12 +99,17 @@ exports.pushChatMessage = onDocumentCreated(
     const sender = await db.collection("users").doc(senderUid).get();
     const senderName = String(sender.get("displayName") || "GlobalCall contact");
 
-    await sendToUser(receiverUid, {
-      type: "chat_message",
-      conversationId: event.params.conversationId,
-      senderUid,
-      senderName,
-      text,
-    });
+    await sendToUser(
+      receiverUid,
+      {
+        type: "chat_message",
+        conversationId: event.params.conversationId,
+        messageId: event.params.messageId,
+        senderUid,
+        senderName,
+        text,
+      },
+      24 * 60 * 60 * 1000
+    );
   }
 );
