@@ -18,8 +18,8 @@ android {
         applicationId = "com.globalcall.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.8.0"
+        versionCode = 9
+        versionName = "0.9.0"
 
         buildConfigField("String", "FIREBASE_API_KEY", "\"AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"guide-c4c2c\"")
