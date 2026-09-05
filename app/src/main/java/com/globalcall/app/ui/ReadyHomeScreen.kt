@@ -1,6 +1,7 @@
 package com.globalcall.app.ui
 
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
@@ -39,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.globalcall.app.ChatActivity
 import com.globalcall.app.ExternalCallRequest
 import com.globalcall.app.MainActivity
 import com.globalcall.app.data.GlobalCallRepository
@@ -145,6 +147,7 @@ fun ReadyHomeScreen(
     onJoinCall: (CallSession) -> Unit
 ) {
     val user = requireNotNull(auth.currentUser)
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
     var tab by remember { mutableIntStateOf(0) }
@@ -162,6 +165,15 @@ fun ReadyHomeScreen(
             .sortedWith(compareByDescending<AppUser> { it.online }.thenBy { it.displayName.lowercase() })
     }
 
+    fun openChat(peer: AppUser) {
+        context.startActivity(
+            Intent(context, ChatActivity::class.java).apply {
+                putExtra(ChatActivity.EXTRA_PEER_UID, peer.uid)
+                putExtra(ChatActivity.EXTRA_PEER_NAME, peer.displayName.ifBlank { "GlobalCall contact" })
+            }
+        )
+    }
+
     LaunchedEffect(user.uid) {
         runCatching { repository.ensureMyCallCode() }
             .onSuccess { myCallCode = it }
@@ -175,8 +187,6 @@ fun ReadyHomeScreen(
         val connectionReg = repository.observeConnectionUids(user.uid, onChange = { connectionUids = it }, onError = { })
         val callsReg = repository.observeCallHistory(user.uid, onChange = { calls = it }, onError = { })
 
-        // The rules authorize call reads by participantUids. Query by that same field,
-        // then filter the receiver/status locally. This avoids Firestore query/rule mismatch.
         val incomingReg = FirebaseFirestore.getInstance()
             .collection("calls")
             .whereArrayContains("participantUids", user.uid)
@@ -214,12 +224,13 @@ fun ReadyHomeScreen(
         }
     }
 
+    // Do not mark the account offline merely because the Activity went to the
+    // background. Signed-in users remain reachable by FCM; sign-out explicitly
+    // sets offline. This avoids the old immediate-offline behavior on Home/lock.
     DisposableEffect(lifecycleOwner, user.uid) {
         val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_START -> scope.launch { runCatching { repository.setOnline(true) } }
-                Lifecycle.Event.ON_STOP -> scope.launch { runCatching { repository.setOnline(false) } }
-                else -> Unit
+            if (event == Lifecycle.Event.ON_START) {
+                scope.launch { runCatching { repository.setOnline(true) } }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -245,9 +256,6 @@ fun ReadyHomeScreen(
         if (busy) return
         scope.launch {
             busy = true
-
-            // Clean up an older unfinished outgoing ring to this same contact before
-            // starting a fresh call. This prevents stacked "Ringing" records.
             calls.filter {
                 it.status == "ringing" &&
                     it.isOutgoing(user.uid) &&
@@ -291,13 +299,15 @@ fun ReadyHomeScreen(
                         people = people,
                         currentUid = user.uid,
                         busy = busy,
-                        onDirectCall = ::directCall
+                        onDirectCall = ::directCall,
+                        onMessage = ::openChat
                     )
                     1 -> PeopleTab(
                         people = people,
                         busy = busy,
                         repository = repository,
-                        onDirectCall = ::directCall
+                        onDirectCall = ::directCall,
+                        onMessage = ::openChat
                     )
                     else -> ProfileTab(
                         auth = auth,
@@ -385,12 +395,11 @@ private fun CallsTab(
     people: List<AppUser>,
     currentUid: String,
     busy: Boolean,
-    onDirectCall: (AppUser, Boolean) -> Unit
+    onDirectCall: (AppUser, Boolean) -> Unit,
+    onMessage: (AppUser) -> Unit
 ) {
     val onlinePeople = remember(people) { people.filter { it.online } }
     val recentCalls = remember(calls, currentUid) {
-        // History stays in Firestore, but the home screen shows only the latest
-        // finished call per contact. Temporary "ringing" rows no longer stack up.
         calls.filter { it.status != "ringing" }
             .distinctBy { it.peerUid(currentUid) }
             .take(30)
@@ -408,13 +417,13 @@ private fun CallsTab(
                         Brush.linearGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.secondaryContainer))
                     ).padding(22.dp)
                 ) {
-                    Text("Real calls. Your contacts.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    Text("Connect once with a GlobalCall ID, then call again whenever they are online.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .8f))
+                    Text("Calls & messages. Your people.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text("Connect once with a GlobalCall ID, then call or message from the same contact.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .8f))
                     Spacer(Modifier.height(16.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
                         Spacer(Modifier.width(8.dp))
-                        Text("Voice & video use the same secure call session", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        Text("Native WebRTC calls • Internet messaging", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
             }
@@ -429,6 +438,7 @@ private fun CallsTab(
                     photoData = person.photoData,
                     online = true,
                     enabled = !busy,
+                    onMessage = { onMessage(person) },
                     onVoice = { onDirectCall(person, false) },
                     onVideo = { onDirectCall(person, true) }
                 )
@@ -437,7 +447,7 @@ private fun CallsTab(
 
         item { Text("Recent calls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
         if (recentCalls.isEmpty()) {
-            item { EmptyCard(Icons.Default.History, "No completed calls yet", "Connect someone with their GlobalCall ID, then start a real voice or video call.") }
+            item { EmptyCard(Icons.Default.History, "No completed calls yet", "Connect someone with their GlobalCall ID, then start a voice/video call or message them.") }
         } else {
             items(recentCalls, key = { it.id }) { call ->
                 val peer = people.firstOrNull { it.uid == call.peerUid(currentUid) }
@@ -453,6 +463,7 @@ private fun CallsTab(
                     photoData = peer?.photoData.orEmpty(),
                     online = peer?.online == true,
                     enabled = peer?.online == true && !busy,
+                    onMessage = peer?.let { { onMessage(it) } },
                     onVoice = { peer?.let { onDirectCall(it, false) } },
                     onVideo = { peer?.let { onDirectCall(it, true) } }
                 )
@@ -466,7 +477,8 @@ private fun PeopleTab(
     people: List<AppUser>,
     busy: Boolean,
     repository: GlobalCallRepository,
-    onDirectCall: (AppUser, Boolean) -> Unit
+    onDirectCall: (AppUser, Boolean) -> Unit,
+    onMessage: (AppUser) -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var search by remember { mutableStateOf("") }
@@ -631,6 +643,7 @@ private fun PeopleTab(
                     photoData = person.photoData,
                     online = person.online,
                     enabled = person.online && !busy,
+                    onMessage = { onMessage(person) },
                     onVoice = { onDirectCall(person, false) },
                     onVideo = { onDirectCall(person, true) }
                 )
@@ -646,6 +659,7 @@ private fun ContactRow(
     photoData: String,
     online: Boolean,
     enabled: Boolean,
+    onMessage: (() -> Unit)?,
     onVoice: () -> Unit,
     onVideo: () -> Unit
 ) {
@@ -662,6 +676,9 @@ private fun ContactRow(
             Column(Modifier.weight(1f)) {
                 Text(title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            }
+            onMessage?.let { action ->
+                IconButton(onClick = action) { Icon(Icons.Default.Chat, "Message") }
             }
             IconButton(enabled = enabled, onClick = onVoice) { Icon(Icons.Default.Call, "Voice call") }
             IconButton(enabled = enabled, onClick = onVideo) { Icon(Icons.Default.Videocam, "Video call") }
@@ -778,7 +795,7 @@ private fun ProfileTab(
                     Spacer(Modifier.height(12.dp))
                     Text(callCode.ifBlank { "Activating…" }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     Spacer(Modifier.height(6.dp))
-                    Text("Share this ID. Another user enters it once to add your account and call you whenever you are online.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .78f))
+                    Text("Share this ID. Another user enters it once to add your account, message you, and call you.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .78f))
                     Spacer(Modifier.height(14.dp))
                     Button(
                         enabled = callCode.isNotBlank(),
@@ -800,8 +817,8 @@ private fun ProfileTab(
                     Icon(Icons.Default.VerifiedUser, null)
                     Spacer(Modifier.width(12.dp))
                     Column {
-                        Text("Account calling is active", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                        Text("Your GlobalCall ID works without SMS billing. Your saved photo is visible to connected GlobalCall users.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Calls & messaging are active", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                        Text("GlobalCall ID calling and internet messages work without carrier SMS billing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
