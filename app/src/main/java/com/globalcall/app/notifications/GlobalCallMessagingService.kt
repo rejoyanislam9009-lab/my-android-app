@@ -62,6 +62,7 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
                     handleIncomingCall(
                         app = app,
                         callId = callId,
+                        expectedCalleeUid = data["calleeUid"].orEmpty(),
                         callerName = data["callerName"].orEmpty().ifBlank { "GlobalCall user" },
                         callerUid = data["callerUid"].orEmpty(),
                         video = data["video"] != "false"
@@ -92,32 +93,61 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
     private suspend fun handleIncomingCall(
         app: FirebaseApp,
         callId: String,
+        expectedCalleeUid: String,
         callerName: String,
         callerUid: String,
         video: Boolean
     ) {
         val auth = FirebaseAuth.getInstance(app)
-        val uid = auth.currentUser?.uid ?: return
-        val db = FirebaseFirestore.getInstance(app)
-        val userRef = db.collection("users").document(uid)
+        val currentUid = auth.currentUser?.uid
+        if (currentUid != null && expectedCalleeUid.isNotBlank() && currentUid != expectedCalleeUid) return
 
         val localBusy = ActiveCallService.hasAnotherActiveCall(this, callId)
+        if (localBusy) {
+            showCallWaiting(callId, callerName, video)
+            if (currentUid != null) {
+                val db = FirebaseFirestore.getInstance(app)
+                delay(3_500L)
+                runCatching {
+                    val callRef = db.collection("calls").document(callId)
+                    val call = callRef.get().await()
+                    if (call.getString("status") == "ringing") {
+                        callRef.update(
+                            mapOf(
+                                "status" to "busy",
+                                "endedAt" to FieldValue.serverTimestamp(),
+                                "updatedAt" to FieldValue.serverTimestamp()
+                            )
+                        ).await()
+                    }
+                }
+            }
+            return
+        }
+
+        // FirebaseAuth can take a moment to restore its cached user when FCM wakes a
+        // killed/background process. Do not silently drop a valid call during that gap.
+        if (currentUid == null) {
+            showIncomingCall(callId, callerName, callerUid, video)
+            return
+        }
+
+        val db = FirebaseFirestore.getInstance(app)
+        val userRef = db.collection("users").document(currentUid)
         val profile = runCatching { userRef.get().await() }.getOrNull()
         val state = profile?.getString("callState").orEmpty()
         val currentCallId = profile?.getString("currentCallId").orEmpty()
         val stateAt = profile?.getTimestamp("callStateUpdatedAt")?.seconds ?: 0L
         val age = ((System.currentTimeMillis() / 1000L) - stateAt).coerceAtLeast(0L)
         val serverBusy = currentCallId.isNotBlank() && currentCallId != callId && when (state) {
-            "active" -> age < 6 * 60 * 60L
-            "calling", "ringing" -> age < 2 * 60L
+            "active" -> age < 120L
+            "calling", "ringing" -> age < 90L
             else -> false
         }
 
-        if (localBusy || serverBusy) {
+        if (serverBusy) {
             showCallWaiting(callId, callerName, video)
-            // Keep the waiting alert visible briefly, then tell the caller that this
-            // user is on another call. Never replace/clear the existing active call.
-            delay(3_500)
+            delay(3_500L)
             runCatching {
                 val callRef = db.collection("calls").document(callId)
                 val call = callRef.get().await()
@@ -380,8 +410,6 @@ class CallActionReceiver : BroadcastReceiver() {
                 ).await()
             }
 
-            // Only clear ringing state when this declined call is actually the user's
-            // current call. Declining a waiting call must never erase another active call.
             runCatching {
                 val userRef = db.collection("users").document(uid)
                 db.runTransaction { tx ->
