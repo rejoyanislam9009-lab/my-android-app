@@ -1,6 +1,11 @@
 package com.globalcall.app
 
+import android.Manifest
+import android.app.Activity
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -20,6 +25,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -31,8 +37,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.model.CallSession
+import com.globalcall.app.notifications.GlobalCallConnectionService
 import com.globalcall.app.ui.AuthScreen
 import com.globalcall.app.ui.CallScreen
 import com.globalcall.app.ui.GuestReadyScreen
@@ -49,6 +57,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ensureFirebaseApp(applicationContext)?.let { app ->
+            if (FirebaseAuth.getInstance(app).currentUser != null) {
+                GlobalCallConnectionService.start(applicationContext)
+            }
+        }
         readCallIntent(intent)
         setContent {
             GlobalCallTheme {
@@ -94,15 +107,38 @@ private data class CloudRuntime(
     val repository: GlobalCallRepository
 )
 
+private fun ensureFirebaseApp(context: Context): FirebaseApp? =
+    FirebaseApp.getApps(context).firstOrNull()
+        ?: runCatching {
+            FirebaseApp.initializeApp(
+                context,
+                FirebaseOptions.Builder()
+                    .setApiKey(BuildConfig.FIREBASE_API_KEY)
+                    .setApplicationId(BuildConfig.FIREBASE_APP_ID)
+                    .setProjectId(BuildConfig.FIREBASE_PROJECT_ID)
+                    .setGcmSenderId(BuildConfig.FIREBASE_SENDER_ID)
+                    .setStorageBucket(BuildConfig.FIREBASE_STORAGE_BUCKET)
+                    .build()
+            )
+        }.getOrNull()
+
 @Composable
 private fun GlobalCallApp(
     externalCallRequest: ExternalCallRequest?,
     onExternalCallHandled: () -> Unit
 ) {
+    val context = LocalContext.current.applicationContext
     val scope = rememberCoroutineScope()
-    var cloudMode by remember { mutableStateOf(false) }
+    val initiallySignedIn = remember {
+        ensureFirebaseApp(context)?.let { FirebaseAuth.getInstance(it).currentUser != null } ?: false
+    }
+    var cloudMode by remember { mutableStateOf(initiallySignedIn || externalCallRequest != null) }
     var callSession by remember { mutableStateOf<CallSession?>(null) }
     var activeRepository by remember { mutableStateOf<GlobalCallRepository?>(null) }
+
+    LaunchedEffect(externalCallRequest?.callId) {
+        if (externalCallRequest != null) cloudMode = true
+    }
 
     val session = callSession
     if (session != null) {
@@ -150,20 +186,11 @@ private fun CloudAccountHost(
     onBackToInstant: () -> Unit,
     onJoinCall: (GlobalCallRepository, CallSession) -> Unit
 ) {
-    val context = LocalContext.current.applicationContext
+    val uiContext = LocalContext.current
+    val appContext = uiContext.applicationContext
     val runtimeResult = remember {
         runCatching {
-            val firebaseApp = FirebaseApp.getApps(context).firstOrNull()
-                ?: FirebaseApp.initializeApp(
-                    context,
-                    FirebaseOptions.Builder()
-                        .setApiKey(BuildConfig.FIREBASE_API_KEY)
-                        .setApplicationId(BuildConfig.FIREBASE_APP_ID)
-                        .setProjectId(BuildConfig.FIREBASE_PROJECT_ID)
-                        .setGcmSenderId(BuildConfig.FIREBASE_SENDER_ID)
-                        .setStorageBucket(BuildConfig.FIREBASE_STORAGE_BUCKET)
-                        .build()
-                )
+            val firebaseApp = requireNotNull(ensureFirebaseApp(appContext)) { "Firebase could not initialize" }
             val auth = FirebaseAuth.getInstance(firebaseApp)
             CloudRuntime(
                 auth = auth,
@@ -186,9 +213,28 @@ private fun CloudAccountHost(
 
     var currentUser by remember(runtime.auth) { mutableStateOf(runtime.auth.currentUser) }
     DisposableEffect(runtime.auth) {
-        val listener = FirebaseAuth.AuthStateListener { currentUser = it.currentUser }
+        val listener = FirebaseAuth.AuthStateListener { auth ->
+            currentUser = auth.currentUser
+            if (auth.currentUser != null) {
+                GlobalCallConnectionService.start(appContext)
+            } else {
+                GlobalCallConnectionService.stop(appContext)
+            }
+        }
         runtime.auth.addAuthStateListener(listener)
         onDispose { runtime.auth.removeAuthStateListener(listener) }
+    }
+
+    LaunchedEffect(currentUser?.uid) {
+        if (currentUser != null) {
+            GlobalCallConnectionService.start(appContext)
+            if (
+                Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(uiContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                (uiContext as? Activity)?.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4120)
+            }
+        }
     }
 
     if (currentUser == null) {
@@ -230,7 +276,7 @@ private fun CloudUnavailableScreen(
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "Instant voice and video calling is still available. Cloud account services could not start on this device.",
+                "GlobalCall could not restore your account connection on this device.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center
             )
@@ -244,9 +290,9 @@ private fun CloudUnavailableScreen(
                 )
             }
             Spacer(Modifier.height(20.dp))
-            Button(onClick = onBack) { Text("Continue to calling") }
+            Button(onClick = onBack) { Text("Back") }
             Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = onBack) { Text("Back") }
+            OutlinedButton(onClick = onBack) { Text("Use without account") }
         }
     }
 }
