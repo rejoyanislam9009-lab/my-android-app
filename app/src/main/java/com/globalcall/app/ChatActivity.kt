@@ -1,8 +1,11 @@
 package com.globalcall.app
 
+import android.graphics.BitmapFactory
 import android.os.Bundle
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -12,14 +15,18 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.globalcall.app.data.ChatMessage
 import com.globalcall.app.data.ChatRepository
@@ -63,6 +70,7 @@ class ChatActivity : ComponentActivity() {
 @Composable
 private fun ChatHost(peerUid: String, initialPeerName: String, onBack: () -> Unit) {
     val callRepository = remember { GlobalCallRepository() }
+    val scope = rememberCoroutineScope()
     var session by remember { mutableStateOf<CallSession?>(null) }
 
     session?.let { callSession ->
@@ -77,15 +85,12 @@ private fun ChatHost(peerUid: String, initialPeerName: String, onBack: () -> Uni
     ChatScreen(
         peerUid = peerUid,
         initialPeerName = initialPeerName,
+        callRepository = callRepository,
         onBack = onBack,
-        onStartCall = { video, onError ->
-            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
-                runCatching {
-                    callRepository.startCall(
-                        AppUser(uid = peerUid, displayName = initialPeerName, online = true),
-                        video
-                    )
-                }.onSuccess { session = it }
+        onStartCall = { peer, video, onError ->
+            scope.launch {
+                runCatching { callRepository.startCall(peer, video) }
+                    .onSuccess { session = it }
                     .onFailure { onError(it.message ?: "Could not start call") }
             }
         }
@@ -97,8 +102,9 @@ private fun ChatHost(peerUid: String, initialPeerName: String, onBack: () -> Uni
 private fun ChatScreen(
     peerUid: String,
     initialPeerName: String,
+    callRepository: GlobalCallRepository,
     onBack: () -> Unit,
-    onStartCall: (Boolean, (String) -> Unit) -> Unit
+    onStartCall: (AppUser, Boolean, (String) -> Unit) -> Unit
 ) {
     val repository = remember { ChatRepository() }
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
@@ -106,12 +112,21 @@ private fun ChatScreen(
     val listState = rememberLazyListState()
     var messages by remember(peerUid) { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var conversation by remember(peerUid) { mutableStateOf<ConversationState?>(null) }
-    var peerName by remember(peerUid) { mutableStateOf(initialPeerName) }
+    var peerOfficialName by remember(peerUid) { mutableStateOf(initialPeerName) }
+    var peerName by remember(peerUid) {
+        mutableStateOf(callRepository.getContactAlias(peerUid).ifBlank { initialPeerName })
+    }
+    var peerEmail by remember(peerUid) { mutableStateOf("") }
+    var peerPhotoData by remember(peerUid) { mutableStateOf("") }
     var peerOnline by remember(peerUid) { mutableStateOf(false) }
     var peerLastSeen by remember(peerUid) { mutableStateOf<Timestamp?>(null) }
     var draft by remember(peerUid) { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var info by remember { mutableStateOf<String?>(null) }
+    var showMoreMenu by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameDraft by remember(peerUid) { mutableStateOf(peerName) }
 
     DisposableEffect(peerUid) {
         val messageRegistration = repository.observeMessages(
@@ -127,9 +142,16 @@ private fun ChatScreen(
         val peerRegistration = FirebaseFirestore.getInstance().collection("users").document(peerUid)
             .addSnapshotListener { snapshot, _ ->
                 if (snapshot != null && snapshot.exists()) {
-                    peerName = snapshot.getString("displayName").orEmpty().ifBlank { initialPeerName }
+                    val email = snapshot.getString("email").orEmpty()
+                    val officialName = snapshot.getString("displayName").orEmpty().trim()
+                        .ifBlank { email.substringBefore('@').trim() }
+                        .ifBlank { initialPeerName }
+                    peerOfficialName = officialName
+                    peerEmail = email
+                    peerPhotoData = snapshot.getString("photoData").orEmpty()
                     peerOnline = snapshot.getBoolean("online") ?: false
                     peerLastSeen = snapshot.getTimestamp("lastSeen")
+                    peerName = callRepository.getContactAlias(peerUid).ifBlank { officialName }
                 }
             }
         onDispose {
@@ -172,16 +194,77 @@ private fun ChatScreen(
         else -> "GlobalCall Messages"
     }
 
+    fun startCall(video: Boolean) {
+        val peer = AppUser(
+            uid = peerUid,
+            displayName = peerName,
+            email = peerEmail,
+            photoData = peerPhotoData,
+            online = peerOnline
+        )
+        onStartCall(peer, video) { error = it }
+    }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("Rename contact") },
+            text = {
+                Column {
+                    Text(
+                        "This name is private to you. Their GlobalCall profile remains unchanged.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = renameDraft,
+                        onValueChange = { renameDraft = it.take(50) },
+                        label = { Text("Contact name") },
+                        placeholder = { Text(peerOfficialName) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (peerOfficialName.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Account name: $peerOfficialName",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        runCatching { callRepository.setContactAlias(peerUid, renameDraft) }
+                            .onSuccess {
+                                peerName = callRepository.getContactAlias(peerUid).ifBlank { peerOfficialName }
+                                info = if (callRepository.getContactAlias(peerUid).isBlank()) {
+                                    "Using account name"
+                                } else {
+                                    "Contact renamed to $peerName"
+                                }
+                                error = null
+                            }
+                            .onFailure { error = it.message ?: "Could not rename contact" }
+                        showRenameDialog = false
+                    }
+                ) { Text("Save") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                            Box(Modifier.size(38.dp), contentAlignment = Alignment.Center) {
-                                Text(peerName.take(1).uppercase(), fontWeight = FontWeight.ExtraBold)
-                            }
-                        }
+                        PeerAvatar(peerPhotoData, peerName, 40.dp)
                         Spacer(Modifier.width(10.dp))
                         Column {
                             Text(peerName, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -197,11 +280,40 @@ private fun ChatScreen(
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
                 },
                 actions = {
-                    IconButton(onClick = { onStartCall(false) { error = it } }) {
+                    IconButton(onClick = { startCall(false) }) {
                         Icon(Icons.Default.Call, "Voice call")
                     }
-                    IconButton(onClick = { onStartCall(true) { error = it } }) {
+                    IconButton(onClick = { startCall(true) }) {
                         Icon(Icons.Default.Videocam, "Video call")
+                    }
+                    Box {
+                        IconButton(onClick = { showMoreMenu = true }) {
+                            Icon(Icons.Default.MoreVert, "Contact options")
+                        }
+                        DropdownMenu(
+                            expanded = showMoreMenu,
+                            onDismissRequest = { showMoreMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Rename contact") },
+                                onClick = {
+                                    renameDraft = peerName
+                                    showMoreMenu = false
+                                    showRenameDialog = true
+                                }
+                            )
+                            if (callRepository.getContactAlias(peerUid).isNotBlank()) {
+                                DropdownMenuItem(
+                                    text = { Text("Use account name") },
+                                    onClick = {
+                                        callRepository.setContactAlias(peerUid, "")
+                                        peerName = peerOfficialName
+                                        info = "Using account name"
+                                        showMoreMenu = false
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             )
@@ -226,15 +338,12 @@ private fun ChatScreen(
                             verticalArrangement = Arrangement.Center,
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                                Box(Modifier.size(74.dp), contentAlignment = Alignment.Center) {
-                                    Text("💬", style = MaterialTheme.typography.headlineMedium)
-                                }
-                            }
+                            PeerAvatar(peerPhotoData, peerName, 78.dp)
                             Spacer(Modifier.height(14.dp))
-                            Text("Start a conversation", fontWeight = FontWeight.Bold)
+                            Text(peerName, fontWeight = FontWeight.ExtraBold, style = MaterialTheme.typography.titleLarge)
+                            Spacer(Modifier.height(4.dp))
                             Text(
-                                "Private GlobalCall internet messages. No carrier SMS charge.",
+                                "Start a private GlobalCall conversation",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 style = MaterialTheme.typography.bodySmall
                             )
@@ -255,6 +364,14 @@ private fun ChatScreen(
                 )
             }
 
+            info?.let {
+                Text(
+                    it,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
             error?.let {
                 Text(
                     it,
@@ -297,6 +414,38 @@ private fun ChatScreen(
                         Icon(Icons.Default.Send, "Send")
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PeerAvatar(photoData: String, name: String, size: Dp) {
+    val image = remember(photoData) {
+        if (photoData.isBlank()) null else runCatching {
+            val bytes = Base64.decode(photoData, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }.getOrNull()
+    }
+    Surface(
+        modifier = Modifier.size(size),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = "$name profile photo",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    name.ifBlank { "G" }.take(1).uppercase(),
+                    fontWeight = FontWeight.ExtraBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
             }
         }
     }
