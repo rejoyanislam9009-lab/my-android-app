@@ -16,11 +16,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.globalcall.app.BuildConfig
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.globalcall.app.ExternalCallRequest
 import com.globalcall.app.MainActivity
 import com.globalcall.app.data.GlobalCallRepository
@@ -29,8 +33,8 @@ import com.globalcall.app.model.CallInvite
 import com.globalcall.app.model.CallRecord
 import com.globalcall.app.model.CallSession
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import java.util.UUID
 
 @Composable
 fun ReadyHomeScreen(
@@ -42,27 +46,54 @@ fun ReadyHomeScreen(
 ) {
     val user = requireNotNull(auth.currentUser)
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = LocalLifecycleOwner.current
     var tab by remember { mutableIntStateOf(0) }
-    var people by remember { mutableStateOf<List<AppUser>>(emptyList()) }
+    var allUsers by remember { mutableStateOf<List<AppUser>>(emptyList()) }
+    var connectionUids by remember { mutableStateOf<Set<String>>(emptySet()) }
     var calls by remember { mutableStateOf<List<CallRecord>>(emptyList()) }
     var incoming by remember { mutableStateOf<CallInvite?>(null) }
+    var myCallCode by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
+    val people = remember(allUsers, connectionUids) {
+        allUsers.filter { it.uid in connectionUids }
+            .sortedWith(compareByDescending<AppUser> { it.online }.thenBy { it.displayName.lowercase() })
+    }
+
     LaunchedEffect(user.uid) {
-        runCatching { repository.setOnline(true) }
+        runCatching { repository.ensureMyCallCode() }
+            .onSuccess { myCallCode = it }
+            .onFailure { message = it.message ?: "Could not activate your GlobalCall ID" }
         runCatching { repository.publishPhoneDirectory() }
     }
 
     DisposableEffect(user.uid) {
-        val peopleReg = repository.observePeople(onChange = { people = it }, onError = { })
+        val peopleReg = repository.observePeople(onChange = { allUsers = it }, onError = { })
+        val connectionReg = repository.observeConnectionUids(user.uid, onChange = { connectionUids = it }, onError = { })
         val callsReg = repository.observeCallHistory(user.uid, onChange = { calls = it }, onError = { })
         val incomingReg = repository.observeIncomingCall(user.uid, onChange = { incoming = it }, onError = { })
         onDispose {
             peopleReg.remove()
+            connectionReg.remove()
             callsReg.remove()
             incomingReg.remove()
         }
+    }
+
+    DisposableEffect(lifecycleOwner, user.uid) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> scope.launch { runCatching { repository.setOnline(true) } }
+                Lifecycle.Event.ON_STOP -> scope.launch { runCatching { repository.setOnline(false) } }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            scope.launch { runCatching { repository.setOnline(true) } }
+        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedEffect(externalCallRequest?.callId) {
@@ -75,20 +106,6 @@ fun ReadyHomeScreen(
             }
         }
         onExternalCallHandled()
-    }
-
-    fun instantSession(code: String, video: Boolean): CallSession {
-        val clean = code.trim().uppercase().replace(Regex("[^A-Z0-9-]"), "").take(32)
-        val finalCode = clean.ifBlank { UUID.randomUUID().toString().replace("-", "").take(10).uppercase() }
-        return CallSession(
-            callId = "instant-$finalCode",
-            peerUid = "",
-            peerName = "Room $finalCode",
-            serverUrl = BuildConfig.MEETING_BASE_URL,
-            token = "GlobalCall-$finalCode",
-            video = video,
-            outgoing = true
-        )
     }
 
     fun directCall(peer: AppUser, video: Boolean) {
@@ -108,7 +125,7 @@ fun ReadyHomeScreen(
             topBar = {
                 GlobalCallTopBar(
                     name = user.displayName ?: user.phoneNumber ?: user.email.orEmpty(),
-                    subtitle = user.phoneNumber ?: user.email.orEmpty(),
+                    onlineCount = people.count { it.online },
                     onSearch = { tab = 1 }
                 )
             },
@@ -121,8 +138,7 @@ fun ReadyHomeScreen(
                         people = people,
                         currentUid = user.uid,
                         busy = busy,
-                        onDirectCall = ::directCall,
-                        onInstantCall = { code, video -> onJoinCall(instantSession(code, video)) }
+                        onDirectCall = ::directCall
                     )
                     1 -> PeopleTab(
                         people = people,
@@ -130,7 +146,12 @@ fun ReadyHomeScreen(
                         repository = repository,
                         onDirectCall = ::directCall
                     )
-                    else -> ProfileTab(auth)
+                    else -> ProfileTab(
+                        auth = auth,
+                        repository = repository,
+                        callCode = myCallCode,
+                        onMessage = { message = it }
+                    )
                 }
                 message?.let {
                     Snackbar(
@@ -148,7 +169,7 @@ fun ReadyHomeScreen(
                     scope.launch {
                         runCatching { repository.acceptCall(invite) }
                             .onSuccess { incoming = null; onJoinCall(it) }
-                            .onFailure { message = it.message }
+                            .onFailure { message = it.message ?: "Could not answer call" }
                     }
                 },
                 onDecline = {
@@ -161,8 +182,8 @@ fun ReadyHomeScreen(
 }
 
 @Composable
-private fun GlobalCallTopBar(name: String, subtitle: String, onSearch: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.background.copy(alpha = .97f)) {
+private fun GlobalCallTopBar(name: String, onlineCount: Int, onSearch: () -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.background.copy(alpha = .98f)) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -173,9 +194,15 @@ private fun GlobalCallTopBar(name: String, subtitle: String, onSearch: () -> Uni
                     Spacer(Modifier.width(8.dp))
                     Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF35D39A)))
                 }
-                Text(name.ifBlank { subtitle }, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    if (onlineCount > 0) "$onlineCount contact${if (onlineCount == 1) "" else "s"} online" else name,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
-            FilledIconButton(onClick = onSearch) { Icon(Icons.Default.Search, "Find people") }
+            FilledIconButton(onClick = onSearch) { Icon(Icons.Default.PersonAdd, "Connect people") }
         }
     }
 }
@@ -195,10 +222,9 @@ private fun CallsTab(
     people: List<AppUser>,
     currentUid: String,
     busy: Boolean,
-    onDirectCall: (AppUser, Boolean) -> Unit,
-    onInstantCall: (String, Boolean) -> Unit
+    onDirectCall: (AppUser, Boolean) -> Unit
 ) {
-    var roomCode by remember { mutableStateOf("") }
+    val onlinePeople = remember(people) { people.filter { it.online } }
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp),
@@ -211,51 +237,50 @@ private fun CallsTab(
                         Brush.linearGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.secondaryContainer))
                     ).padding(22.dp)
                 ) {
-                    Text("Call anyone, instantly", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-                    Text("Private voice & video rooms", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(18.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Button(onClick = { onInstantCall("", true) }, modifier = Modifier.weight(1f).height(56.dp), shape = RoundedCornerShape(18.dp)) {
-                            Icon(Icons.Default.Videocam, null); Spacer(Modifier.width(8.dp)); Text("Video")
-                        }
-                        FilledTonalButton(onClick = { onInstantCall("", false) }, modifier = Modifier.weight(1f).height(56.dp), shape = RoundedCornerShape(18.dp)) {
-                            Icon(Icons.Default.Call, null); Spacer(Modifier.width(8.dp)); Text("Voice")
-                        }
-                    }
-                    Spacer(Modifier.height(14.dp))
-                    OutlinedTextField(
-                        value = roomCode,
-                        onValueChange = { roomCode = it.uppercase().take(32) },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Join with room code") },
-                        leadingIcon = { Icon(Icons.Default.Tag, null) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(18.dp)
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        OutlinedButton(enabled = roomCode.trim().length >= 4, onClick = { onInstantCall(roomCode, true) }, modifier = Modifier.weight(1f)) { Text("Join video") }
-                        OutlinedButton(enabled = roomCode.trim().length >= 4, onClick = { onInstantCall(roomCode, false) }, modifier = Modifier.weight(1f)) { Text("Join voice") }
+                    Text("Real calls. Your contacts.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                    Text("Connect once with a GlobalCall ID, then call again whenever they are online.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(16.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Voice & video use the same secure call session", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
         }
+
+        if (onlinePeople.isNotEmpty()) {
+            item { Text("Online now", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            items(onlinePeople, key = { "online-${it.uid}" }) { person ->
+                ContactRow(
+                    title = person.displayName.ifBlank { "GlobalCall user" },
+                    subtitle = "Online • ${person.callCode.ifBlank { "Connected" }}",
+                    online = true,
+                    enabled = !busy,
+                    onVoice = { onDirectCall(person, false) },
+                    onVideo = { onDirectCall(person, true) }
+                )
+            }
+        }
+
         item { Text("Recent calls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         if (calls.isEmpty()) {
-            item { EmptyCard(Icons.Default.History, "No calls yet", "Your recent calls will appear here.") }
+            item { EmptyCard(Icons.Default.History, "No calls yet", "Connect someone with their GlobalCall ID, then start a real voice or video call.") }
         } else {
             items(calls.take(30), key = { it.id }) { call ->
                 val peer = people.firstOrNull { it.uid == call.peerUid(currentUid) }
+                val stateText = when (call.status) {
+                    "ringing" -> "Ringing"
+                    "declined" -> "Declined"
+                    "accepted" -> "Connected"
+                    "ended" -> "Completed"
+                    else -> call.status.replaceFirstChar { it.uppercase() }
+                }
                 ContactRow(
-                    title = call.peerName(currentUid).ifBlank { "GlobalCall user" },
-                    subtitle = when (call.status) {
-                        "ringing" -> "Calling…"
-                        "declined" -> "Declined"
-                        "accepted" -> "Connected"
-                        else -> "Completed"
-                    },
-                    online = false,
-                    enabled = peer != null && !busy,
+                    title = call.peerName(currentUid).ifBlank { peer?.displayName ?: "GlobalCall user" },
+                    subtitle = if (peer?.online == true) "$stateText • Online" else "$stateText • Offline",
+                    online = peer?.online == true,
+                    enabled = peer?.online == true && !busy,
                     onVoice = { peer?.let { onDirectCall(it, false) } },
                     onVideo = { peer?.let { onDirectCall(it, true) } }
                 )
@@ -273,13 +298,17 @@ private fun PeopleTab(
 ) {
     val scope = rememberCoroutineScope()
     var search by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
+    var codeMessage by remember { mutableStateOf<String?>(null) }
+    var connecting by remember { mutableStateOf(false) }
     var phone by remember { mutableStateOf("") }
     var phoneResult by remember { mutableStateOf<AppUser?>(null) }
     var phoneMessage by remember { mutableStateOf<String?>(null) }
     var searchingPhone by remember { mutableStateOf(false) }
+
     val filtered = remember(people, search) {
         people.filter {
-            search.isBlank() || it.displayName.contains(search, true) || it.email.contains(search, true) || it.phoneLast4.contains(search.filter(Char::isDigit))
+            search.isBlank() || it.displayName.contains(search, true) || it.callCode.contains(search, true) || it.phoneLast4.contains(search.filter(Char::isDigit))
         }
     }
 
@@ -289,19 +318,62 @@ private fun PeopleTab(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            ElevatedCard(shape = RoundedCornerShape(26.dp)) {
-                Column(Modifier.padding(18.dp)) {
+            ElevatedCard(shape = RoundedCornerShape(28.dp)) {
+                Column(Modifier.padding(20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                            Icon(Icons.Default.Phone, null, modifier = Modifier.padding(11.dp), tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Default.PersonAdd, null, modifier = Modifier.padding(12.dp), tint = MaterialTheme.colorScheme.primary)
                         }
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text("Find by phone number", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                            Text("Like IMO — enter the verified international number", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Connect with GlobalCall ID", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            Text("Enter their account code once. They stay in your contacts.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    Spacer(Modifier.height(14.dp))
+                    Spacer(Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it.uppercase().take(20); codeMessage = null },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("GlobalCall ID") },
+                        placeholder = { Text("GC-1A2B-3C4D-5E6F") },
+                        leadingIcon = { Icon(Icons.Default.Tag, null) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp)
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                connecting = true
+                                codeMessage = null
+                                runCatching { repository.connectByCode(code) }
+                                    .onSuccess {
+                                        codeMessage = "${it.displayName.ifBlank { "GlobalCall user" }} added to your contacts"
+                                        code = ""
+                                    }
+                                    .onFailure { codeMessage = it.message ?: "Could not connect this account" }
+                                connecting = false
+                            }
+                        },
+                        enabled = !connecting && code.filter(Char::isLetterOrDigit).length == 14,
+                        modifier = Modifier.fillMaxWidth().height(54.dp),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        if (connecting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        else { Icon(Icons.Default.Link, null); Spacer(Modifier.width(8.dp)); Text("Connect account") }
+                    }
+                    codeMessage?.let { Spacer(Modifier.height(10.dp)); Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        }
+
+        item {
+            ElevatedCard(shape = RoundedCornerShape(24.dp)) {
+                Column(Modifier.padding(18.dp)) {
+                    Text("Optional: find by verified phone", fontWeight = FontWeight.Bold)
+                    Text("Phone OTP requires Firebase SMS billing. GlobalCall ID does not.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
                         value = phone,
                         onValueChange = { phone = it.take(18); phoneResult = null; phoneMessage = null },
@@ -314,7 +386,7 @@ private fun PeopleTab(
                         shape = RoundedCornerShape(18.dp)
                     )
                     Spacer(Modifier.height(10.dp))
-                    Button(
+                    OutlinedButton(
                         onClick = {
                             scope.launch {
                                 searchingPhone = true
@@ -322,36 +394,43 @@ private fun PeopleTab(
                                 runCatching { repository.findUserByPhone(phone) }
                                     .onSuccess {
                                         phoneResult = it
-                                        if (it == null) phoneMessage = "No GlobalCall user found with this number"
+                                        if (it == null) phoneMessage = "No verified GlobalCall user found"
                                     }
                                     .onFailure { phoneMessage = it.message ?: "Could not search this number" }
                                 searchingPhone = false
                             }
                         },
                         enabled = !searchingPhone && phone.trim().startsWith("+") && phone.filter(Char::isDigit).length >= 8,
-                        modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape = RoundedCornerShape(18.dp)
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        if (searchingPhone) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        else { Icon(Icons.Default.PersonSearch, null); Spacer(Modifier.width(8.dp)); Text("Find GlobalCall user") }
+                        if (searchingPhone) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else { Icon(Icons.Default.PersonSearch, null); Spacer(Modifier.width(8.dp)); Text("Find verified account") }
                     }
-                    phoneMessage?.let { Spacer(Modifier.height(10.dp)); Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
+                    phoneMessage?.let { Spacer(Modifier.height(8.dp)); Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
             }
         }
 
         phoneResult?.let { result ->
             item {
-                Text("Found", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(8.dp))
-                ContactRow(
-                    title = result.displayName.ifBlank { "GlobalCall user" },
-                    subtitle = if (result.phoneLast4.isNotBlank()) "Verified • •••• ${result.phoneLast4}" else "Verified GlobalCall user",
-                    online = result.online,
-                    enabled = !busy,
-                    onVoice = { onDirectCall(result, false) },
-                    onVideo = { onDirectCall(result, true) }
-                )
+                ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Text(result.displayName.ifBlank { "GlobalCall user" }, fontWeight = FontWeight.Bold)
+                        Text(if (result.callCode.isNotBlank()) result.callCode else "Open GlobalCall on the other account to activate its ID", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (result.callCode.isNotBlank()) {
+                            Spacer(Modifier.height(10.dp))
+                            Button(onClick = {
+                                scope.launch {
+                                    connecting = true
+                                    runCatching { repository.connectByCode(result.callCode) }
+                                        .onSuccess { phoneMessage = "Account connected"; phoneResult = null }
+                                        .onFailure { phoneMessage = it.message ?: "Could not connect" }
+                                    connecting = false
+                                }
+                            }, enabled = !connecting) { Text("Add to contacts") }
+                        }
+                    }
+                }
             }
         }
 
@@ -360,22 +439,22 @@ private fun PeopleTab(
                 value = search,
                 onValueChange = { search = it },
                 modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Search people") },
+                placeholder = { Text("Search your contacts") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 singleLine = true,
                 shape = RoundedCornerShape(18.dp)
             )
         }
-        item { Text("People", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        item { Text("Your contacts", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
         if (filtered.isEmpty()) {
-            item { EmptyCard(Icons.Default.Groups, "No contacts yet", "Find someone by their verified phone number above.") }
+            item { EmptyCard(Icons.Default.Groups, "No contacts yet", "Ask another GlobalCall user for the ID shown on their Profile screen.") }
         } else {
             items(filtered, key = { it.uid }) { person ->
                 ContactRow(
-                    title = person.displayName.ifBlank { person.email.ifBlank { "GlobalCall user" } },
-                    subtitle = if (person.phoneLast4.isNotBlank()) "•••• ${person.phoneLast4}" else if (person.online) "Online" else "GlobalCall user",
+                    title = person.displayName.ifBlank { "GlobalCall user" },
+                    subtitle = if (person.online) "Online • ${person.callCode.ifBlank { "Connected" }}" else "Offline • ${person.callCode.ifBlank { "Connected" }}",
                     online = person.online,
-                    enabled = !busy,
+                    enabled = person.online && !busy,
                     onVoice = { onDirectCall(person, false) },
                     onVideo = { onDirectCall(person, true) }
                 )
@@ -399,7 +478,10 @@ private fun ContactRow(
                 Surface(modifier = Modifier.size(54.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
                     Box(contentAlignment = Alignment.Center) { Text(title.take(1).uppercase(), fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary) }
                 }
-                if (online) Box(Modifier.align(Alignment.BottomEnd).size(14.dp).clip(CircleShape).background(Color(0xFF35D39A)))
+                Box(
+                    Modifier.align(Alignment.BottomEnd).size(14.dp).clip(CircleShape)
+                        .background(if (online) Color(0xFF35D39A) else MaterialTheme.colorScheme.outlineVariant)
+                )
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
@@ -424,40 +506,100 @@ private fun EmptyCard(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
 }
 
 @Composable
-private fun ProfileTab(auth: FirebaseAuth) {
+private fun ProfileTab(
+    auth: FirebaseAuth,
+    repository: GlobalCallRepository,
+    callCode: String,
+    onMessage: (String) -> Unit
+) {
     val user = auth.currentUser ?: return
     val identifier = user.phoneNumber ?: user.email.orEmpty()
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+    val scope = rememberCoroutineScope()
+    val clipboard = LocalClipboardManager.current
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Spacer(Modifier.height(28.dp))
-        Surface(modifier = Modifier.size(110.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-            Box(contentAlignment = Alignment.Center) { Text((user.displayName ?: identifier).take(1).uppercase(), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold) }
+        item {
+            Surface(modifier = Modifier.size(110.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                Box(contentAlignment = Alignment.Center) { Text((user.displayName ?: identifier).take(1).uppercase(), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold) }
+            }
         }
-        Spacer(Modifier.height(16.dp))
-        Text(user.displayName ?: "GlobalCall user", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-        Text(identifier, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Spacer(Modifier.height(20.dp))
-        ElevatedCard(shape = RoundedCornerShape(22.dp)) {
-            Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(if (user.phoneNumber != null) Icons.Default.VerifiedUser else Icons.Default.AccountCircle, null)
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text(if (user.phoneNumber != null) "Verified phone account" else "GlobalCall account", fontWeight = FontWeight.Bold)
-                    Text(if (user.phoneNumber != null) "People can find you by your verified number." else "Sign in with phone to become discoverable by number.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        item {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(user.displayName ?: "GlobalCall user", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(identifier, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        item {
+            Card(
+                shape = RoundedCornerShape(28.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+            ) {
+                Column(Modifier.fillMaxWidth().padding(22.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Badge, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Your GlobalCall ID", fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(callCode.ifBlank { "Activating…" }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Share this ID. Another user enters it once to add your account and call you whenever you are online.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        enabled = callCode.isNotBlank(),
+                        onClick = {
+                            clipboard.setText(AnnotatedString(callCode))
+                            onMessage("GlobalCall ID copied")
+                        }
+                    ) {
+                        Icon(Icons.Default.ContentCopy, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Copy ID")
+                    }
                 }
             }
         }
-        Spacer(Modifier.height(18.dp))
-        OutlinedButton(onClick = { auth.signOut() }, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-            Icon(Icons.Default.Logout, null); Spacer(Modifier.width(8.dp)); Text("Sign out")
+        item {
+            ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+                Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.VerifiedUser, null)
+                    Spacer(Modifier.width(12.dp))
+                    Column {
+                        Text("Account calling is active", fontWeight = FontWeight.Bold)
+                        Text("Your GlobalCall ID works without SMS billing. Phone verification remains optional.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        item {
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        runCatching { repository.setOnline(false) }
+                        auth.signOut()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth().height(52.dp)
+            ) {
+                Icon(Icons.Default.Logout, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Sign out")
+            }
         }
     }
 }
 
 @Composable
 private fun IncomingOverlay(invite: CallInvite, onAnswer: () -> Unit, onDecline: () -> Unit) {
+    LaunchedEffect(invite.id) {
+        delay(45_000)
+        onDecline()
+    }
     Surface(Modifier.fillMaxSize(), color = Color(0xF20A0D13)) {
         Column(
             Modifier.fillMaxSize().padding(32.dp),
@@ -471,6 +613,7 @@ private fun IncomingOverlay(invite: CallInvite, onAnswer: () -> Unit, onDecline:
             }
             Spacer(Modifier.height(18.dp))
             Text(invite.callerName.ifBlank { "GlobalCall user" }, color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text("GlobalCall • secure ${if (invite.video) "video" else "voice"} call", color = Color.White.copy(alpha = .62f))
             Spacer(Modifier.height(44.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(44.dp)) {
                 FilledIconButton(onClick = onDecline, modifier = Modifier.size(70.dp), colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))) {
