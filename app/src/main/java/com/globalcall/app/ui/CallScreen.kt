@@ -5,19 +5,21 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.media.RingtoneManager
 import android.os.Build
 import android.os.PowerManager
+import android.util.Base64
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Chat
@@ -33,9 +35,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -43,6 +48,7 @@ import com.globalcall.app.ChatActivity
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.media.WebRtcCallEngine
 import com.globalcall.app.model.CallSession
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.webrtc.SurfaceViewRenderer
@@ -73,6 +79,8 @@ fun CallScreen(
     var audioRoutes by remember(session.callId) { mutableStateOf(listOf("earpiece", "speaker")) }
     var showAudioMenu by remember { mutableStateOf(false) }
     var mediaRetryNonce by remember(session.callId) { mutableIntStateOf(0) }
+    var peerDisplayName by remember(session.callId) { mutableStateOf(session.peerName.ifBlank { "GlobalCall contact" }) }
+    var peerPhotoData by remember(session.callId) { mutableStateOf("") }
 
     var permissionsGranted by remember(session.callId) {
         mutableStateOf(
@@ -96,9 +104,30 @@ fun CallScreen(
         context.startActivity(
             Intent(context, ChatActivity::class.java).apply {
                 putExtra(ChatActivity.EXTRA_PEER_UID, session.peerUid)
-                putExtra(ChatActivity.EXTRA_PEER_NAME, session.peerName)
+                putExtra(ChatActivity.EXTRA_PEER_NAME, peerDisplayName)
             }
         )
+    }
+
+    DisposableEffect(session.peerUid, repository) {
+        if (session.peerUid.isBlank() || repository == null) {
+            onDispose { }
+        } else {
+            val registration = FirebaseFirestore.getInstance()
+                .collection("users")
+                .document(session.peerUid)
+                .addSnapshotListener { snapshot, _ ->
+                    if (snapshot != null && snapshot.exists()) {
+                        val email = snapshot.getString("email").orEmpty()
+                        val official = snapshot.getString("displayName").orEmpty().trim()
+                            .ifBlank { email.substringBefore('@').trim() }
+                            .ifBlank { session.peerName.ifBlank { "GlobalCall contact" } }
+                        peerDisplayName = repository.getContactAlias(session.peerUid).ifBlank { official }
+                        peerPhotoData = snapshot.getString("photoData").orEmpty()
+                    }
+                }
+            onDispose { registration.remove() }
+        }
     }
 
     DisposableEffect(activity, session.callId) {
@@ -109,8 +138,6 @@ fun CallScreen(
         }
     }
 
-    // Phone-dialer behavior: proximity is only active while an audio call is using
-    // the earpiece. Speaker, Bluetooth and wired-headset routes must keep the screen on.
     DisposableEffect(callStatus, session.video, finished, audioRoute) {
         val wakeLock = if (
             !session.video &&
@@ -305,30 +332,21 @@ fun CallScreen(
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Surface(modifier = Modifier.size(126.dp), shape = CircleShape, color = Color(0xFF1A2A45)) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            if (session.video) Icons.Default.Videocam else Icons.Default.Call,
-                            null,
-                            tint = Color.White,
-                            modifier = Modifier.size(54.dp)
-                        )
-                    }
-                }
+                CallPeerAvatar(peerPhotoData, peerDisplayName, 132.dp)
                 Spacer(Modifier.height(24.dp))
                 Text(
                     when {
-                        callStatus == "ringing" -> "Calling"
+                        callStatus == "ringing" -> if (session.video) "Video calling" else "Voice calling"
                         connected -> if (session.video) "Video call" else "Voice call"
-                        else -> "Connecting"
+                        else -> "Connecting securely"
                     },
-                    color = Color.White,
-                    style = MaterialTheme.typography.headlineSmall,
+                    color = Color.White.copy(alpha = .82f),
+                    style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    session.peerName.ifBlank { "GlobalCall contact" },
+                    peerDisplayName,
                     color = Color.White,
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.ExtraBold,
@@ -362,21 +380,25 @@ fun CallScreen(
         }
 
         if (accepted && session.video) {
-            Column(
-                modifier = Modifier.align(Alignment.TopStart).padding(top = 58.dp, start = 20.dp, end = 150.dp)
+            Surface(
+                modifier = Modifier.align(Alignment.TopStart).padding(top = 50.dp, start = 14.dp, end = 142.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = Color(0x8A05080E)
             ) {
-                Text(
-                    session.peerName.ifBlank { "GlobalCall contact" },
-                    color = Color.White,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1
-                )
-                Text(
-                    if (connected) "$duration • ${audioRouteLabel(audioRoute)}" else mediaState,
-                    color = Color.White.copy(alpha = .74f),
-                    style = MaterialTheme.typography.bodyMedium
-                )
+                Column(Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                    Text(
+                        peerDisplayName,
+                        color = Color.White,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                    Text(
+                        if (connected) "$duration • ${audioRouteLabel(audioRoute)}" else mediaState,
+                        color = Color.White.copy(alpha = .78f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
         }
 
@@ -510,6 +532,40 @@ fun CallScreen(
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))
             ) {
                 Icon(Icons.Default.CallEnd, "End call", modifier = Modifier.size(34.dp), tint = Color.White)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CallPeerAvatar(photoData: String, name: String, size: Dp) {
+    val image = remember(photoData) {
+        if (photoData.isBlank()) null else runCatching {
+            val bytes = Base64.decode(photoData, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }.getOrNull()
+    }
+    Surface(
+        modifier = Modifier.size(size),
+        shape = CircleShape,
+        color = Color(0xFF1A2A45),
+        shadowElevation = 8.dp
+    ) {
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = "$name profile photo",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    name.ifBlank { "G" }.take(1).uppercase(),
+                    color = Color.White,
+                    style = MaterialTheme.typography.displayMedium,
+                    fontWeight = FontWeight.ExtraBold
+                )
             }
         }
     }
