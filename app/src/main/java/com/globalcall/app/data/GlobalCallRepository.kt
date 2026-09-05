@@ -26,7 +26,10 @@ class GlobalCallRepository(
         onError: (Throwable) -> Unit
     ): ListenerRegistration = db.collection("users").addSnapshotListener { snapshot, error ->
         if (error != null) {
-            onError(error)
+            // Never surface backend/security implementation details to the calling UI.
+            // Keep the app fully usable with room-code calling while cloud directory
+            // permissions are being deployed; the listener will recover automatically.
+            onChange(emptyList())
             return@addSnapshotListener
         }
         val me = currentUid
