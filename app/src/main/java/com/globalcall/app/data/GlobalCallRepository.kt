@@ -30,6 +30,7 @@ class GlobalCallRepository(
             email = doc.getString("email").orEmpty(),
             bio = doc.getString("bio").orEmpty(),
             photoUrl = doc.getString("photoUrl").orEmpty(),
+            photoData = doc.getString("photoData").orEmpty(),
             phoneLast4 = doc.getString("phoneLast4").orEmpty(),
             callCode = doc.getString("callCode").orEmpty(),
             online = doc.getBoolean("online") ?: false,
@@ -58,7 +59,9 @@ class GlobalCallRepository(
     suspend fun ensureMyCallCode(): String {
         val user = requireNotNull(auth.currentUser) { "Not signed in" }
         val userRef = db.collection("users").document(user.uid)
-        val existing = userRef.get().await().getString("callCode").orEmpty()
+        val profileSnapshot = userRef.get().await()
+        val existing = profileSnapshot.getString("callCode").orEmpty()
+        val photoData = profileSnapshot.getString("photoData").orEmpty()
         val code = existing.takeIf { it.isNotBlank() } ?: generatedCode(user.uid)
         val key = compactCode(code)
         val codeRef = db.collection("callCodes").document(key)
@@ -74,6 +77,7 @@ class GlobalCallRepository(
                     "uid" to user.uid,
                     "displayName" to displayName,
                     "photoUrl" to (user.photoUrl?.toString() ?: ""),
+                    "photoData" to photoData,
                     "updatedAt" to FieldValue.serverTimestamp()
                 ),
                 SetOptions.merge()
@@ -91,6 +95,18 @@ class GlobalCallRepository(
             )
         }.await()
         return code
+    }
+
+    fun observeMyProfile(
+        uid: String,
+        onChange: (AppUser?) -> Unit,
+        onError: (Throwable) -> Unit
+    ): ListenerRegistration = db.collection("users").document(uid).addSnapshotListener { snapshot, error ->
+        if (error != null) {
+            onError(error)
+            return@addSnapshotListener
+        }
+        onChange(snapshot?.takeIf { it.exists() }?.let(::userFrom))
     }
 
     fun observePeople(
@@ -139,6 +155,7 @@ class GlobalCallRepository(
             uid = uid,
             displayName = codeDoc.getString("displayName").orEmpty(),
             photoUrl = codeDoc.getString("photoUrl").orEmpty(),
+            photoData = codeDoc.getString("photoData").orEmpty(),
             callCode = displayCode(key)
         )
     }
@@ -173,6 +190,7 @@ class GlobalCallRepository(
             email = profile?.getString("email").orEmpty(),
             bio = profile?.getString("bio").orEmpty(),
             photoUrl = profile?.getString("photoUrl") ?: directory.getString("photoUrl").orEmpty(),
+            photoData = profile?.getString("photoData") ?: directory.getString("photoData").orEmpty(),
             phoneLast4 = directory.getString("phoneLast4").orEmpty(),
             callCode = profile?.getString("callCode").orEmpty(),
             online = profile?.getBoolean("online") ?: false,
@@ -185,11 +203,14 @@ class GlobalCallRepository(
         val phone = user.phoneNumber ?: return
         val normalized = PhoneDirectory.normalize(phone)
         val displayName = user.displayName ?: "GlobalCall user"
+        val profile = db.collection("users").document(user.uid).get().await()
+        val photoData = profile.getString("photoData").orEmpty()
         db.collection("phoneDirectory").document(PhoneDirectory.key(normalized)).set(
             mapOf(
                 "uid" to user.uid,
                 "displayName" to displayName,
                 "photoUrl" to (user.photoUrl?.toString() ?: ""),
+                "photoData" to photoData,
                 "phoneLast4" to PhoneDirectory.last4(normalized),
                 "updatedAt" to FieldValue.serverTimestamp()
             ),
@@ -350,6 +371,30 @@ class GlobalCallRepository(
         val callCode = ensureMyCallCode()
         db.collection("users").document(user.uid).set(
             mapOf("uid" to user.uid, "displayName" to cleanName, "email" to user.email.orEmpty().lowercase(Locale.ROOT), "bio" to bio.trim(), "callCode" to callCode, "locale" to Locale.getDefault().toLanguageTag(), "updatedAt" to FieldValue.serverTimestamp()),
+            SetOptions.merge()
+        ).await()
+        runCatching { publishPhoneDirectory() }
+    }
+
+    suspend fun updateProfilePhoto(photoData: String) {
+        val user = requireNotNull(auth.currentUser) { "Not signed in" }
+        require(photoData.length <= 260_000) { "Profile photo is too large" }
+        val callCode = ensureMyCallCode()
+        val key = compactCode(callCode)
+        val now = FieldValue.serverTimestamp()
+        db.collection("users").document(user.uid).set(
+            mapOf(
+                "photoData" to photoData,
+                "updatedAt" to now
+            ),
+            SetOptions.merge()
+        ).await()
+        db.collection("callCodes").document(key).set(
+            mapOf(
+                "uid" to user.uid,
+                "photoData" to photoData,
+                "updatedAt" to FieldValue.serverTimestamp()
+            ),
             SetOptions.merge()
         ).await()
         runCatching { publishPhoneDirectory() }
