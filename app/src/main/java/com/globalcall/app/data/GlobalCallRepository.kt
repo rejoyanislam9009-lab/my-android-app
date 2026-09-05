@@ -1,5 +1,7 @@
 package com.globalcall.app.data
 
+import android.content.Context
+import android.content.SharedPreferences
 import com.globalcall.app.BuildConfig
 import com.globalcall.app.model.AppUser
 import com.globalcall.app.model.CallInvite
@@ -22,12 +24,50 @@ class GlobalCallRepository(
     val currentUid: String?
         get() = auth.currentUser?.uid
 
+    private fun accountDisplayName(name: String, email: String = "", fallback: String = "GlobalCall user"): String =
+        name.trim().ifBlank { email.substringBefore('@').trim() }.ifBlank { fallback }
+
+    private fun contactPrefs(ownerUid: String): SharedPreferences =
+        auth.app.applicationContext.getSharedPreferences(
+            "globalcall_contact_names_$ownerUid",
+            Context.MODE_PRIVATE
+        )
+
+    fun getContactAlias(peerUid: String): String {
+        val ownerUid = currentUid ?: return ""
+        if (peerUid.isBlank() || peerUid == ownerUid) return ""
+        return contactPrefs(ownerUid).getString(peerUid, "").orEmpty().trim()
+    }
+
+    fun setContactAlias(peerUid: String, alias: String) {
+        val ownerUid = requireNotNull(currentUid) { "Not signed in" }
+        require(peerUid.isNotBlank() && peerUid != ownerUid) { "Invalid contact" }
+        val clean = alias.trim()
+        require(clean.length <= 50) { "Contact name must be 50 characters or less" }
+        contactPrefs(ownerUid).edit().apply {
+            if (clean.isBlank()) remove(peerUid) else putString(peerUid, clean)
+        }.apply()
+    }
+
+    private fun applyContactAlias(user: AppUser): AppUser {
+        val official = accountDisplayName(user.displayName, user.email)
+        val alias = getContactAlias(user.uid)
+        return user.copy(displayName = alias.ifBlank { official })
+    }
+
+    private fun visiblePeerName(peerUid: String, official: String, email: String = ""): String =
+        getContactAlias(peerUid).ifBlank {
+            accountDisplayName(official, email, "GlobalCall contact")
+        }
+
     private fun userFrom(doc: DocumentSnapshot): AppUser {
         val uid = doc.getString("uid") ?: doc.id
+        val email = doc.getString("email").orEmpty()
+        val displayName = accountDisplayName(doc.getString("displayName").orEmpty(), email)
         return AppUser(
             uid = uid,
-            displayName = doc.getString("displayName").orEmpty(),
-            email = doc.getString("email").orEmpty(),
+            displayName = displayName,
+            email = email,
             bio = doc.getString("bio").orEmpty(),
             photoUrl = doc.getString("photoUrl").orEmpty(),
             photoData = doc.getString("photoData").orEmpty(),
@@ -79,10 +119,11 @@ class GlobalCallRepository(
         val code = existing.takeIf { it.isNotBlank() } ?: generatedCode(user.uid)
         val key = compactCode(code)
         val codeRef = db.collection("callCodes").document(key)
-        val displayName = user.displayName
-            ?: user.email?.substringBefore('@')
-            ?: user.phoneNumber
-            ?: "GlobalCall user"
+        val displayName = accountDisplayName(
+            user.displayName.orEmpty(),
+            user.email.orEmpty(),
+            user.phoneNumber ?: "GlobalCall user"
+        )
 
         db.runTransaction { tx ->
             val occupied = tx.get(codeRef)
@@ -129,41 +170,91 @@ class GlobalCallRepository(
     fun observePeople(
         onChange: (List<AppUser>) -> Unit,
         onError: (Throwable) -> Unit
-    ): ListenerRegistration = db.collection("users").addSnapshotListener { snapshot, error ->
-        if (error != null) {
-            onError(error)
-            return@addSnapshotListener
-        }
-        val me = currentUid
-        val users = snapshot?.documents.orEmpty().mapNotNull { doc ->
-            val user = userFrom(doc)
-            if (user.uid == me) null else user
-        }
-        onChange(
-            users.sortedWith(
-                compareByDescending<AppUser> { it.online }
-                    .thenBy { it.displayName.lowercase(Locale.ROOT) }
+    ): ListenerRegistration {
+        val ownerUid = currentUid
+        val prefs = ownerUid?.let(::contactPrefs)
+        var latestUsers = emptyList<AppUser>()
+
+        fun emit() {
+            onChange(
+                latestUsers
+                    .map(::applyContactAlias)
+                    .sortedWith(
+                        compareByDescending<AppUser> { it.online }
+                            .thenBy { it.displayName.lowercase(Locale.ROOT) }
+                    )
             )
-        )
+        }
+
+        val preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> emit() }
+        prefs?.registerOnSharedPreferenceChangeListener(preferenceListener)
+
+        val firestoreRegistration = db.collection("users").addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                onError(error)
+                return@addSnapshotListener
+            }
+            val me = currentUid
+            latestUsers = snapshot?.documents.orEmpty().mapNotNull { doc ->
+                val user = userFrom(doc)
+                if (user.uid == me) null else user
+            }
+            emit()
+        }
+
+        return object : ListenerRegistration {
+            override fun remove() {
+                firestoreRegistration.remove()
+                prefs?.unregisterOnSharedPreferenceChangeListener(preferenceListener)
+            }
+        }
     }
 
     fun observeConnectionUids(
         uid: String,
         onChange: (Set<String>) -> Unit,
         onError: (Throwable) -> Unit
-    ): ListenerRegistration = db.collection("connections")
-        .whereArrayContains("participantUids", uid)
-        .addSnapshotListener { snapshot, error ->
-            if (error != null) {
-                onError(error)
-                return@addSnapshotListener
-            }
-            val peers = snapshot?.documents.orEmpty().flatMap { doc ->
+    ): ListenerRegistration {
+        var connectionPeers = emptySet<String>()
+        var conversationPeers = emptySet<String>()
+
+        fun peersFrom(snapshot: com.google.firebase.firestore.QuerySnapshot?): Set<String> =
+            snapshot?.documents.orEmpty().flatMap { doc ->
                 @Suppress("UNCHECKED_CAST")
                 (doc.get("participantUids") as? List<String>).orEmpty()
             }.filter { it != uid }.toSet()
-            onChange(peers)
+
+        fun emit() = onChange(connectionPeers + conversationPeers)
+
+        val connectionRegistration = db.collection("connections")
+            .whereArrayContains("participantUids", uid)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    onError(error)
+                    return@addSnapshotListener
+                }
+                connectionPeers = peersFrom(snapshot)
+                emit()
+            }
+
+        val conversationRegistration = db.collection("conversations")
+            .whereArrayContains("participantUids", uid)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    onError(error)
+                    return@addSnapshotListener
+                }
+                conversationPeers = peersFrom(snapshot)
+                emit()
+            }
+
+        return object : ListenerRegistration {
+            override fun remove() {
+                connectionRegistration.remove()
+                conversationRegistration.remove()
+            }
         }
+    }
 
     suspend fun findUserByCode(rawCode: String): AppUser? {
         val me = currentUid
@@ -173,13 +264,14 @@ class GlobalCallRepository(
         val uid = codeDoc.getString("uid").orEmpty()
         if (uid.isBlank() || uid == me) return null
         val profile = db.collection("users").document(uid).get().await()
-        return if (profile.exists()) userFrom(profile) else AppUser(
+        val user = if (profile.exists()) userFrom(profile) else AppUser(
             uid = uid,
-            displayName = codeDoc.getString("displayName").orEmpty(),
+            displayName = accountDisplayName(codeDoc.getString("displayName").orEmpty()),
             photoUrl = codeDoc.getString("photoUrl").orEmpty(),
             photoData = codeDoc.getString("photoData").orEmpty(),
             callCode = displayCode(key)
         )
+        return applyContactAlias(user)
     }
 
     suspend fun connectByCode(rawCode: String): AppUser {
@@ -208,10 +300,14 @@ class GlobalCallRepository(
         val uid = directory.getString("uid").orEmpty()
         if (uid.isBlank() || uid == currentUid) return null
         val profile = runCatching { db.collection("users").document(uid).get().await() }.getOrNull()
-        return AppUser(
+        val email = profile?.getString("email").orEmpty()
+        val user = AppUser(
             uid = uid,
-            displayName = profile?.getString("displayName") ?: directory.getString("displayName").orEmpty(),
-            email = profile?.getString("email").orEmpty(),
+            displayName = accountDisplayName(
+                profile?.getString("displayName").orEmpty().ifBlank { directory.getString("displayName").orEmpty() },
+                email
+            ),
+            email = email,
             bio = profile?.getString("bio").orEmpty(),
             photoUrl = profile?.getString("photoUrl") ?: directory.getString("photoUrl").orEmpty(),
             photoData = profile?.getString("photoData") ?: directory.getString("photoData").orEmpty(),
@@ -222,13 +318,14 @@ class GlobalCallRepository(
             callState = profile?.getString("callState").orEmpty().ifBlank { "idle" },
             currentCallId = profile?.getString("currentCallId").orEmpty()
         )
+        return applyContactAlias(user)
     }
 
     suspend fun publishPhoneDirectory() {
         val user = auth.currentUser ?: return
         val phone = user.phoneNumber ?: return
         val normalized = PhoneDirectory.normalize(phone)
-        val displayName = user.displayName ?: "GlobalCall user"
+        val displayName = accountDisplayName(user.displayName.orEmpty(), user.email.orEmpty())
         val profile = db.collection("users").document(user.uid).get().await()
         val photoData = profile.getString("photoData").orEmpty()
         db.collection("phoneDirectory").document(PhoneDirectory.key(normalized)).set(
@@ -267,10 +364,11 @@ class GlobalCallRepository(
                 .filter { it.getString("calleeUid") == uid && it.getString("status") == "ringing" }
                 .maxByOrNull { it.getTimestamp("createdAt")?.seconds ?: 0L }
             onChange(doc?.let {
+                val callerUid = it.getString("callerUid").orEmpty()
                 CallInvite(
                     id = it.id,
-                    callerUid = it.getString("callerUid").orEmpty(),
-                    callerName = it.getString("callerName").orEmpty(),
+                    callerUid = callerUid,
+                    callerName = visiblePeerName(callerUid, it.getString("callerName").orEmpty()),
                     calleeUid = it.getString("calleeUid").orEmpty(),
                     calleeName = it.getString("calleeName").orEmpty(),
                     status = it.getString("status").orEmpty(),
@@ -292,12 +390,16 @@ class GlobalCallRepository(
                 return@addSnapshotListener
             }
             val calls = snapshot?.documents.orEmpty().map { doc ->
+                val callerUid = doc.getString("callerUid").orEmpty()
+                val calleeUid = doc.getString("calleeUid").orEmpty()
+                val callerRaw = doc.getString("callerName").orEmpty()
+                val calleeRaw = doc.getString("calleeName").orEmpty()
                 CallRecord(
                     id = doc.id,
-                    callerUid = doc.getString("callerUid").orEmpty(),
-                    callerName = doc.getString("callerName").orEmpty(),
-                    calleeUid = doc.getString("calleeUid").orEmpty(),
-                    calleeName = doc.getString("calleeName").orEmpty(),
+                    callerUid = callerUid,
+                    callerName = if (callerUid == uid) callerRaw else visiblePeerName(callerUid, callerRaw),
+                    calleeUid = calleeUid,
+                    calleeName = if (calleeUid == uid) calleeRaw else visiblePeerName(calleeUid, calleeRaw),
                     status = doc.getString("status").orEmpty(),
                     video = doc.getBoolean("video") ?: true,
                     createdAt = doc.getTimestamp("createdAt"),
@@ -342,16 +444,23 @@ class GlobalCallRepository(
 
         val callRef = db.collection("calls").document()
         val roomName = "GlobalCall-${callRef.id}"
-        val callerName = user.displayName ?: user.phoneNumber ?: user.email.orEmpty()
-        val calleeName = livePeer.getString("displayName").orEmpty()
-            .ifBlank { peer.displayName.ifBlank { "GlobalCall user" } }
+        val callerName = accountDisplayName(user.displayName.orEmpty(), user.email.orEmpty(), user.phoneNumber ?: "GlobalCall user")
+        val liveEmail = livePeer.getString("email").orEmpty()
+        val officialCalleeName = accountDisplayName(
+            livePeer.getString("displayName").orEmpty(),
+            liveEmail,
+            peer.displayName.ifBlank { "GlobalCall user" }
+        )
+        val localPeerName = getContactAlias(peer.uid).ifBlank {
+            peer.displayName.ifBlank { officialCalleeName }
+        }
 
         callRef.set(
             mapOf(
                 "callerUid" to user.uid,
                 "callerName" to callerName,
                 "calleeUid" to peer.uid,
-                "calleeName" to calleeName,
+                "calleeName" to officialCalleeName,
                 "participantUids" to listOf(user.uid, peer.uid),
                 "roomName" to roomName,
                 "status" to "ringing",
@@ -365,7 +474,7 @@ class GlobalCallRepository(
         return CallSession(
             callId = callRef.id,
             peerUid = peer.uid,
-            peerName = calleeName,
+            peerName = localPeerName,
             serverUrl = BuildConfig.MEETING_BASE_URL,
             token = roomName,
             video = video,
@@ -398,7 +507,7 @@ class GlobalCallRepository(
         return CallSession(
             invite.id,
             invite.callerUid,
-            invite.callerName,
+            visiblePeerName(invite.callerUid, invite.callerName),
             BuildConfig.MEETING_BASE_URL,
             invite.roomName.ifBlank { "GlobalCall-${invite.id}" },
             invite.video,
@@ -410,10 +519,11 @@ class GlobalCallRepository(
         val uid = currentUid ?: return null
         val doc = db.collection("calls").document(callId).get().await()
         if (!doc.exists() || doc.getString("calleeUid") != uid) return null
+        val callerUid = doc.getString("callerUid").orEmpty()
         return CallInvite(
             id = doc.id,
-            callerUid = doc.getString("callerUid").orEmpty(),
-            callerName = doc.getString("callerName").orEmpty(),
+            callerUid = callerUid,
+            callerName = visiblePeerName(callerUid, doc.getString("callerName").orEmpty()),
             calleeUid = doc.getString("calleeUid").orEmpty(),
             calleeName = doc.getString("calleeName").orEmpty(),
             status = doc.getString("status").orEmpty(),
@@ -569,7 +679,7 @@ class GlobalCallRepository(
         val existing = runCatching { userRef.get().await() }.getOrNull()
         val data = mutableMapOf<String, Any>(
             "uid" to user.uid,
-            "displayName" to (user.displayName ?: phone ?: user.email.orEmpty()),
+            "displayName" to accountDisplayName(user.displayName.orEmpty(), user.email.orEmpty(), phone ?: "GlobalCall user"),
             "email" to user.email.orEmpty().lowercase(Locale.ROOT),
             "phoneLast4" to (
                 phone?.let { runCatching { PhoneDirectory.last4(PhoneDirectory.normalize(it)) }.getOrDefault("") } ?: ""
