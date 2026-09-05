@@ -1,5 +1,13 @@
 package com.globalcall.app.ui
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,11 +24,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -33,8 +45,93 @@ import com.globalcall.app.model.CallInvite
 import com.globalcall.app.model.CallRecord
 import com.globalcall.app.model.CallSession
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+
+private suspend fun encodeProfilePhoto(context: Context, uri: Uri): String = withContext(Dispatchers.IO) {
+    val resolver = context.contentResolver
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    resolver.openInputStream(uri).use { input ->
+        requireNotNull(input) { "Could not open this image" }
+        BitmapFactory.decodeStream(input, null, bounds)
+    }
+    require(bounds.outWidth > 0 && bounds.outHeight > 0) { "Please choose a valid image" }
+
+    var sample = 1
+    while (bounds.outWidth / sample > 900 || bounds.outHeight / sample > 900) sample *= 2
+    val options = BitmapFactory.Options().apply { inSampleSize = sample }
+    val bitmap = resolver.openInputStream(uri).use { input ->
+        requireNotNull(input) { "Could not open this image" }
+        BitmapFactory.decodeStream(input, null, options)
+    } ?: error("Could not decode this image")
+
+    val maxSide = 320f
+    val scale = minOf(1f, maxSide / maxOf(bitmap.width, bitmap.height).toFloat())
+    val scaled = if (scale < 1f) {
+        Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * scale).toInt().coerceAtLeast(1),
+            (bitmap.height * scale).toInt().coerceAtLeast(1),
+            true
+        )
+    } else bitmap
+
+    var quality = 80
+    var bytes: ByteArray
+    val output = ByteArrayOutputStream()
+    do {
+        output.reset()
+        scaled.compress(Bitmap.CompressFormat.JPEG, quality, output)
+        bytes = output.toByteArray()
+        quality -= 8
+    } while (bytes.size > 150 * 1024 && quality >= 48)
+
+    if (scaled !== bitmap) bitmap.recycle()
+    scaled.recycle()
+    require(bytes.size <= 190 * 1024) { "This photo is too large. Please choose another image." }
+    Base64.encodeToString(bytes, Base64.NO_WRAP)
+}
+
+@Composable
+private fun AvatarImage(
+    photoData: String,
+    name: String,
+    size: Dp,
+    modifier: Modifier = Modifier
+) {
+    val image = remember(photoData) {
+        if (photoData.isBlank()) null else runCatching {
+            val bytes = Base64.decode(photoData, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+        }.getOrNull()
+    }
+    Surface(
+        modifier = modifier.size(size),
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.primaryContainer
+    ) {
+        if (image != null) {
+            Image(
+                bitmap = image,
+                contentDescription = "$name profile photo",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    name.ifBlank { "G" }.take(1).uppercase(),
+                    style = if (size >= 90.dp) MaterialTheme.typography.displaySmall else MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun ReadyHomeScreen(
@@ -49,6 +146,7 @@ fun ReadyHomeScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     var tab by remember { mutableIntStateOf(0) }
     var allUsers by remember { mutableStateOf<List<AppUser>>(emptyList()) }
+    var myProfile by remember { mutableStateOf<AppUser?>(null) }
     var connectionUids by remember { mutableStateOf<Set<String>>(emptySet()) }
     var calls by remember { mutableStateOf<List<CallRecord>>(emptyList()) }
     var incoming by remember { mutableStateOf<CallInvite?>(null) }
@@ -69,11 +167,13 @@ fun ReadyHomeScreen(
     }
 
     DisposableEffect(user.uid) {
+        val myProfileReg = repository.observeMyProfile(user.uid, onChange = { myProfile = it }, onError = { })
         val peopleReg = repository.observePeople(onChange = { allUsers = it }, onError = { })
         val connectionReg = repository.observeConnectionUids(user.uid, onChange = { connectionUids = it }, onError = { })
         val callsReg = repository.observeCallHistory(user.uid, onChange = { calls = it }, onError = { })
         val incomingReg = repository.observeIncomingCall(user.uid, onChange = { incoming = it }, onError = { })
         onDispose {
+            myProfileReg.remove()
             peopleReg.remove()
             connectionReg.remove()
             callsReg.remove()
@@ -124,7 +224,10 @@ fun ReadyHomeScreen(
             containerColor = Color.Transparent,
             topBar = {
                 GlobalCallTopBar(
-                    name = user.displayName ?: user.phoneNumber ?: user.email.orEmpty(),
+                    name = myProfile?.displayName?.ifBlank { null }
+                        ?: user.displayName
+                        ?: user.phoneNumber
+                        ?: user.email.orEmpty(),
                     onlineCount = people.count { it.online },
                     onSearch = { tab = 1 }
                 )
@@ -149,6 +252,7 @@ fun ReadyHomeScreen(
                     else -> ProfileTab(
                         auth = auth,
                         repository = repository,
+                        profile = myProfile,
                         callCode = myCallCode,
                         onMessage = { message = it }
                     )
@@ -165,6 +269,7 @@ fun ReadyHomeScreen(
         incoming?.let { invite ->
             IncomingOverlay(
                 invite = invite,
+                callerPhotoData = people.firstOrNull { it.uid == invite.callerUid }?.photoData.orEmpty(),
                 onAnswer = {
                     scope.launch {
                         runCatching { repository.acceptCall(invite) }
@@ -183,14 +288,22 @@ fun ReadyHomeScreen(
 
 @Composable
 private fun GlobalCallTopBar(name: String, onlineCount: Int, onSearch: () -> Unit) {
-    Surface(color = MaterialTheme.colorScheme.background.copy(alpha = .98f)) {
+    Surface(
+        color = MaterialTheme.colorScheme.background.copy(alpha = .98f),
+        contentColor = MaterialTheme.colorScheme.onSurface
+    ) {
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("GlobalCall", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                    Text(
+                        "GlobalCall",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                     Spacer(Modifier.width(8.dp))
                     Box(Modifier.size(8.dp).clip(CircleShape).background(Color(0xFF35D39A)))
                 }
@@ -237,24 +350,25 @@ private fun CallsTab(
                         Brush.linearGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.secondaryContainer))
                     ).padding(22.dp)
                 ) {
-                    Text("Real calls. Your contacts.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-                    Text("Connect once with a GlobalCall ID, then call again whenever they are online.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Real calls. Your contacts.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text("Connect once with a GlobalCall ID, then call again whenever they are online.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .8f))
                     Spacer(Modifier.height(16.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(8.dp))
-                        Text("Voice & video use the same secure call session", style = MaterialTheme.typography.bodySmall)
+                        Text("Voice & video use the same secure call session", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                 }
             }
         }
 
         if (onlinePeople.isNotEmpty()) {
-            item { Text("Online now", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+            item { Text("Online now", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
             items(onlinePeople, key = { "online-${it.uid}" }) { person ->
                 ContactRow(
                     title = person.displayName.ifBlank { "GlobalCall user" },
                     subtitle = "Online • ${person.callCode.ifBlank { "Connected" }}",
+                    photoData = person.photoData,
                     online = true,
                     enabled = !busy,
                     onVoice = { onDirectCall(person, false) },
@@ -263,7 +377,7 @@ private fun CallsTab(
             }
         }
 
-        item { Text("Recent calls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        item { Text("Recent calls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
         if (calls.isEmpty()) {
             item { EmptyCard(Icons.Default.History, "No calls yet", "Connect someone with their GlobalCall ID, then start a real voice or video call.") }
         } else {
@@ -279,6 +393,7 @@ private fun CallsTab(
                 ContactRow(
                     title = call.peerName(currentUid).ifBlank { peer?.displayName ?: "GlobalCall user" },
                     subtitle = if (peer?.online == true) "$stateText • Online" else "$stateText • Offline",
+                    photoData = peer?.photoData.orEmpty(),
                     online = peer?.online == true,
                     enabled = peer?.online == true && !busy,
                     onVoice = { peer?.let { onDirectCall(it, false) } },
@@ -326,7 +441,7 @@ private fun PeopleTab(
                         }
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text("Connect with GlobalCall ID", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                            Text("Connect with GlobalCall ID", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                             Text("Enter their account code once. They stay in your contacts.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
@@ -371,7 +486,7 @@ private fun PeopleTab(
         item {
             ElevatedCard(shape = RoundedCornerShape(24.dp)) {
                 Column(Modifier.padding(18.dp)) {
-                    Text("Optional: find by verified phone", fontWeight = FontWeight.Bold)
+                    Text("Optional: find by verified phone", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                     Text("Phone OTP requires Firebase SMS billing. GlobalCall ID does not.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(12.dp))
                     OutlinedTextField(
@@ -414,12 +529,15 @@ private fun PeopleTab(
         phoneResult?.let { result ->
             item {
                 ElevatedCard(shape = RoundedCornerShape(22.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                        Text(result.displayName.ifBlank { "GlobalCall user" }, fontWeight = FontWeight.Bold)
-                        Text(if (result.callCode.isNotBlank()) result.callCode else "Open GlobalCall on the other account to activate its ID", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AvatarImage(result.photoData, result.displayName, 52.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(result.displayName.ifBlank { "GlobalCall user" }, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Text(if (result.callCode.isNotBlank()) result.callCode else "Open GlobalCall on the other account to activate its ID", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                         if (result.callCode.isNotBlank()) {
-                            Spacer(Modifier.height(10.dp))
-                            Button(onClick = {
+                            FilledIconButton(onClick = {
                                 scope.launch {
                                     connecting = true
                                     runCatching { repository.connectByCode(result.callCode) }
@@ -427,7 +545,7 @@ private fun PeopleTab(
                                         .onFailure { phoneMessage = it.message ?: "Could not connect" }
                                     connecting = false
                                 }
-                            }, enabled = !connecting) { Text("Add to contacts") }
+                            }, enabled = !connecting) { Icon(Icons.Default.PersonAdd, "Add to contacts") }
                         }
                     }
                 }
@@ -445,7 +563,7 @@ private fun PeopleTab(
                 shape = RoundedCornerShape(18.dp)
             )
         }
-        item { Text("Your contacts", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) }
+        item { Text("Your contacts", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
         if (filtered.isEmpty()) {
             item { EmptyCard(Icons.Default.Groups, "No contacts yet", "Ask another GlobalCall user for the ID shown on their Profile screen.") }
         } else {
@@ -453,6 +571,7 @@ private fun PeopleTab(
                 ContactRow(
                     title = person.displayName.ifBlank { "GlobalCall user" },
                     subtitle = if (person.online) "Online • ${person.callCode.ifBlank { "Connected" }}" else "Offline • ${person.callCode.ifBlank { "Connected" }}",
+                    photoData = person.photoData,
                     online = person.online,
                     enabled = person.online && !busy,
                     onVoice = { onDirectCall(person, false) },
@@ -467,6 +586,7 @@ private fun PeopleTab(
 private fun ContactRow(
     title: String,
     subtitle: String,
+    photoData: String,
     online: Boolean,
     enabled: Boolean,
     onVoice: () -> Unit,
@@ -475,9 +595,7 @@ private fun ContactRow(
     ElevatedCard(shape = RoundedCornerShape(22.dp)) {
         Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Box {
-                Surface(modifier = Modifier.size(54.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                    Box(contentAlignment = Alignment.Center) { Text(title.take(1).uppercase(), fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary) }
-                }
+                AvatarImage(photoData, title, 54.dp)
                 Box(
                     Modifier.align(Alignment.BottomEnd).size(14.dp).clip(CircleShape)
                         .background(if (online) Color(0xFF35D39A) else MaterialTheme.colorScheme.outlineVariant)
@@ -485,7 +603,7 @@ private fun ContactRow(
             }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
             }
             IconButton(enabled = enabled, onClick = onVoice) { Icon(Icons.Default.Call, "Voice call") }
@@ -500,7 +618,10 @@ private fun EmptyCard(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
         Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) { Icon(icon, null, modifier = Modifier.padding(12.dp)) }
             Spacer(Modifier.width(14.dp))
-            Column { Text(title, fontWeight = FontWeight.Bold); Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Column {
+                Text(title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -509,13 +630,35 @@ private fun EmptyCard(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
 private fun ProfileTab(
     auth: FirebaseAuth,
     repository: GlobalCallRepository,
+    profile: AppUser?,
     callCode: String,
     onMessage: (String) -> Unit
 ) {
     val user = auth.currentUser ?: return
     val identifier = user.phoneNumber ?: user.email.orEmpty()
+    val name = profile?.displayName?.ifBlank { null } ?: user.displayName ?: "GlobalCall user"
+    val photoData = profile?.photoData.orEmpty()
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    var savingPhoto by remember { mutableStateOf(false) }
+
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                savingPhoto = true
+                runCatching {
+                    val encoded = encodeProfilePhoto(context, uri)
+                    repository.updateProfilePhoto(encoded)
+                }.onSuccess {
+                    onMessage("Profile photo saved")
+                }.onFailure {
+                    onMessage(it.message ?: "Could not save profile photo")
+                }
+                savingPhoto = false
+            }
+        }
+    }
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -524,13 +667,43 @@ private fun ProfileTab(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         item {
-            Surface(modifier = Modifier.size(110.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                Box(contentAlignment = Alignment.Center) { Text((user.displayName ?: identifier).take(1).uppercase(), style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.ExtraBold) }
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                AvatarImage(photoData, name, 112.dp)
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(
+                        onClick = { photoPicker.launch("image/*") },
+                        enabled = !savingPhoto
+                    ) {
+                        if (savingPhoto) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Default.PhotoCamera, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (photoData.isBlank()) "Add photo" else "Change photo")
+                    }
+                    if (photoData.isNotBlank()) {
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    savingPhoto = true
+                                    runCatching { repository.updateProfilePhoto("") }
+                                        .onSuccess { onMessage("Profile photo removed") }
+                                        .onFailure { onMessage(it.message ?: "Could not remove photo") }
+                                    savingPhoto = false
+                                }
+                            },
+                            enabled = !savingPhoto
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, null)
+                            Spacer(Modifier.width(6.dp))
+                            Text("Remove")
+                        }
+                    }
+                }
             }
         }
         item {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(user.displayName ?: "GlobalCall user", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(name, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                 Text(identifier, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
@@ -541,14 +714,14 @@ private fun ProfileTab(
             ) {
                 Column(Modifier.fillMaxWidth().padding(22.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Badge, null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Default.Badge, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
                         Spacer(Modifier.width(10.dp))
-                        Text("Your GlobalCall ID", fontWeight = FontWeight.Bold)
+                        Text("Your GlobalCall ID", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                     Spacer(Modifier.height(12.dp))
-                    Text(callCode.ifBlank { "Activating…" }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                    Text(callCode.ifBlank { "Activating…" }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     Spacer(Modifier.height(6.dp))
-                    Text("Share this ID. Another user enters it once to add your account and call you whenever you are online.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Share this ID. Another user enters it once to add your account and call you whenever you are online.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .78f))
                     Spacer(Modifier.height(14.dp))
                     Button(
                         enabled = callCode.isNotBlank(),
@@ -570,8 +743,8 @@ private fun ProfileTab(
                     Icon(Icons.Default.VerifiedUser, null)
                     Spacer(Modifier.width(12.dp))
                     Column {
-                        Text("Account calling is active", fontWeight = FontWeight.Bold)
-                        Text("Your GlobalCall ID works without SMS billing. Phone verification remains optional.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Account calling is active", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                        Text("Your GlobalCall ID works without SMS billing. Your saved photo is visible to connected GlobalCall users.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -595,7 +768,12 @@ private fun ProfileTab(
 }
 
 @Composable
-private fun IncomingOverlay(invite: CallInvite, onAnswer: () -> Unit, onDecline: () -> Unit) {
+private fun IncomingOverlay(
+    invite: CallInvite,
+    callerPhotoData: String,
+    onAnswer: () -> Unit,
+    onDecline: () -> Unit
+) {
     LaunchedEffect(invite.id) {
         delay(45_000)
         onDecline()
@@ -608,9 +786,7 @@ private fun IncomingOverlay(invite: CallInvite, onAnswer: () -> Unit, onDecline:
         ) {
             Text(if (invite.video) "Incoming video call" else "Incoming voice call", color = Color.White.copy(alpha = .7f))
             Spacer(Modifier.height(20.dp))
-            Surface(modifier = Modifier.size(120.dp), shape = CircleShape, color = Color(0xFF263248)) {
-                Box(contentAlignment = Alignment.Center) { Text(invite.callerName.take(1).uppercase(), color = Color.White, style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold) }
-            }
+            AvatarImage(callerPhotoData, invite.callerName, 120.dp)
             Spacer(Modifier.height(18.dp))
             Text(invite.callerName.ifBlank { "GlobalCall user" }, color = Color.White, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
             Text("GlobalCall • secure ${if (invite.video) "video" else "voice"} call", color = Color.White.copy(alpha = .62f))
