@@ -12,8 +12,6 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
 
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
@@ -40,12 +38,9 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".notifications.GlobalCallConnectionService"
-            android:exported="false"
-            android:foregroundServiceType="remoteMessaging"
-            android:stopWithTask="false" />
-
+        <!-- Idle GlobalCall no longer runs a foreground service, so there is no
+             permanent "GlobalCall is active" notification. Incoming calls are
+             delivered through Firebase Cloud Messaging and use the call channel. -->
         <service
             android:name=".notifications.GlobalCallMessagingService"
             android:exported="false">
