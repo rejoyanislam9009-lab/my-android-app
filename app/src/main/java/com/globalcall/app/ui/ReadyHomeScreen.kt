@@ -224,7 +224,7 @@ fun ReadyHomeScreen(
             containerColor = Color.Transparent,
             topBar = {
                 GlobalCallTopBar(
-                    name = myProfile?.displayName?.ifBlank { null }
+                    name = myProfile?.displayName?.takeIf { it.isNotBlank() }
                         ?: user.displayName
                         ?: user.phoneNumber
                         ?: user.email.orEmpty(),
@@ -636,7 +636,7 @@ private fun ProfileTab(
 ) {
     val user = auth.currentUser ?: return
     val identifier = user.phoneNumber ?: user.email.orEmpty()
-    val name = profile?.displayName?.ifBlank { null } ?: user.displayName ?: "GlobalCall user"
+    val name = profile?.displayName?.takeIf { it.isNotBlank() } ?: user.displayName ?: "GlobalCall user"
     val photoData = profile?.photoData.orEmpty()
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
