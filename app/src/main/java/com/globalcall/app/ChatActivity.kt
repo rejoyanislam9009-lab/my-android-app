@@ -171,20 +171,22 @@ private fun ChatScreen(
         }
     }
 
-    LaunchedEffect(draft) {
+    // Do not key this effect on every character. The previous implementation
+    // restarted its delay on every key press, so fast typing could remain invisible.
+    LaunchedEffect(peerUid, draft.isBlank()) {
         if (draft.isBlank()) {
             runCatching { repository.setTyping(peerUid, false) }
         } else {
-            delay(450)
-            runCatching { repository.setTyping(peerUid, true) }
-            delay(2_500)
-            runCatching { repository.setTyping(peerUid, false) }
+            while (draft.isNotBlank()) {
+                runCatching { repository.setTyping(peerUid, true) }
+                delay(2_500L)
+            }
         }
     }
 
     val peerTyping = conversation?.let { state ->
         val age = state.typingAt?.let { (System.currentTimeMillis() / 1000L) - it.seconds } ?: Long.MAX_VALUE
-        state.typingUid == peerUid && age in 0..8
+        state.typingUid == peerUid && age in 0..10
     } == true
 
     val subtitle = when {
@@ -360,7 +362,8 @@ private fun ChatScreen(
                     "$peerName is typing…",
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
                     color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelMedium
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
                 )
             }
 
