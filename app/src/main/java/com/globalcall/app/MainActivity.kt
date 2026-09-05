@@ -5,32 +5,19 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.util.Patterns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
-import androidx.compose.material3.Button
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -39,12 +26,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.globalcall.app.data.GlobalCallRepository
+import com.globalcall.app.data.UserDiscoveryRepository
 import com.globalcall.app.model.CallSession
 import com.globalcall.app.ui.AuthScreen
 import com.globalcall.app.ui.CallScreen
 import com.globalcall.app.ui.GuestReadyScreen
 import com.globalcall.app.ui.ReadyHomeScreen
 import com.globalcall.app.ui.theme.GlobalCallTheme
+import com.globalcall.app.ui.theme.ThemeMode
+import com.globalcall.app.ui.theme.ThemePreferences
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
@@ -208,6 +198,7 @@ private fun CloudAccountHost(
     }
 
     var currentUser by remember(runtime.auth) { mutableStateOf(runtime.auth.currentUser) }
+    var showAccountTools by remember { mutableStateOf(false) }
     DisposableEffect(runtime.auth) {
         val listener = FirebaseAuth.AuthStateListener { auth -> currentUser = auth.currentUser }
         runtime.auth.addAuthStateListener(listener)
@@ -240,14 +231,168 @@ private fun CloudAccountHost(
     if (currentUser == null) {
         AuthScreen(runtime.auth, onGuest = onBackToInstant)
     } else {
-        ReadyHomeScreen(
-            auth = runtime.auth,
-            repository = runtime.repository,
-            externalCallRequest = externalCallRequest,
-            onExternalCallHandled = onExternalCallHandled,
-            onJoinCall = { onJoinCall(runtime.repository, it) }
-        )
+        Box(Modifier.fillMaxSize()) {
+            ReadyHomeScreen(
+                auth = runtime.auth,
+                repository = runtime.repository,
+                externalCallRequest = externalCallRequest,
+                onExternalCallHandled = onExternalCallHandled,
+                onJoinCall = { onJoinCall(runtime.repository, it) }
+            )
+            SmallFloatingActionButton(
+                onClick = { showAccountTools = true },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 18.dp, bottom = 92.dp),
+                containerColor = MaterialTheme.colorScheme.secondaryContainer
+            ) {
+                Icon(Icons.Default.Settings, "Account and appearance")
+            }
+        }
+
+        if (showAccountTools) {
+            AccountAppearanceDialog(
+                auth = runtime.auth,
+                repository = runtime.repository,
+                onDismiss = { showAccountTools = false }
+            )
+        }
     }
+}
+
+@Composable
+private fun AccountAppearanceDialog(
+    auth: FirebaseAuth,
+    repository: GlobalCallRepository,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val user = auth.currentUser ?: return
+    val discoveryRepository = remember(auth) { UserDiscoveryRepository(auth = auth) }
+    var username by remember(user.uid) { mutableStateOf("") }
+    var callCode by remember(user.uid) { mutableStateOf("") }
+    var recipient by remember(user.uid) { mutableStateOf(user.email.orEmpty()) }
+    var loadingDetails by remember { mutableStateOf(true) }
+    var message by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(user.uid) {
+        loadingDetails = true
+        val codeResult = runCatching { repository.ensureMyCallCode() }
+        val usernameResult = runCatching { discoveryRepository.ensureMyUsername() }
+        callCode = codeResult.getOrDefault("")
+        username = usernameResult.getOrDefault("")
+        message = codeResult.exceptionOrNull()?.message ?: usernameResult.exceptionOrNull()?.message
+        loadingDetails = false
+    }
+
+    fun emailDetails() {
+        val target = recipient.trim()
+        if (!Patterns.EMAIL_ADDRESS.matcher(target).matches()) {
+            message = "Enter a valid email address"
+            return
+        }
+        if (username.isBlank() && callCode.isBlank()) {
+            message = "Your GlobalCall details are still syncing"
+            return
+        }
+        val body = buildString {
+            append("Your GlobalCall account details\n\n")
+            append("Name: ${user.displayName ?: "GlobalCall user"}\n")
+            if (username.isNotBlank()) append("Username: @$username\n")
+            if (callCode.isNotBlank()) append("Backup GlobalCall ID: $callCode\n")
+            if (!user.email.isNullOrBlank()) append("Account email: ${user.email}\n")
+            append("\nKeep this email so you can find your GlobalCall username and backup ID later.")
+        }
+        val intent = Intent(Intent.ACTION_SENDTO).apply {
+            data = Uri.parse("mailto:${Uri.encode(target)}")
+            putExtra(Intent.EXTRA_SUBJECT, "My GlobalCall username and ID")
+            putExtra(Intent.EXTRA_TEXT, body)
+        }
+        runCatching {
+            context.startActivity(Intent.createChooser(intent, "Email GlobalCall details"))
+        }.onFailure {
+            message = "No email app is available on this phone"
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.Settings, null) },
+        title = { Text("Account & appearance") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Text(
+                    "Choose how GlobalCall looks on this device.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    FilterChip(
+                        selected = ThemePreferences.mode == ThemeMode.SYSTEM,
+                        onClick = { ThemePreferences.setMode(context.applicationContext, ThemeMode.SYSTEM) },
+                        label = { Text("System") },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = ThemePreferences.mode == ThemeMode.LIGHT,
+                        onClick = { ThemePreferences.setMode(context.applicationContext, ThemeMode.LIGHT) },
+                        label = { Text("Light") },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = ThemePreferences.mode == ThemeMode.DARK,
+                        onClick = { ThemePreferences.setMode(context.applicationContext, ThemeMode.DARK) },
+                        label = { Text("Dark") },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                HorizontalDivider()
+
+                Text("Email my account details", fontWeight = FontWeight.Bold)
+                Text(
+                    if (loadingDetails) "Preparing your username and backup ID…"
+                    else buildString {
+                        if (username.isNotBlank()) append("@$username")
+                        if (username.isNotBlank() && callCode.isNotBlank()) append(" • ")
+                        if (callCode.isNotBlank()) append(callCode)
+                    }.ifBlank { "Account details unavailable" },
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                OutlinedTextField(
+                    value = recipient,
+                    onValueChange = { recipient = it.trim().take(120); message = null },
+                    label = { Text("Send details to email") },
+                    leadingIcon = { Icon(Icons.Default.Email, null) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Button(
+                    onClick = ::emailDetails,
+                    enabled = !loadingDetails,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Email, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Email my details")
+                }
+                Text(
+                    "For security, GlobalCall opens your email app with everything filled in. You review it and tap Send; no email password or SMTP key is stored inside the APK.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                message?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Done") }
+        }
+    )
 }
 
 @Composable
