@@ -18,8 +18,8 @@ android {
         applicationId = "com.globalcall.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7.0"
+        versionCode = 8
+        versionName = "0.8.0"
 
         buildConfigField("String", "FIREBASE_API_KEY", "\"AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"guide-c4c2c\"")
@@ -27,6 +27,22 @@ android {
         buildConfigField("String", "FIREBASE_SENDER_ID", "\"512749667590\"")
         buildConfigField("String", "FIREBASE_STORAGE_BUCKET", "\"guide-c4c2c.firebasestorage.app\"")
         buildConfigField("String", "MEETING_BASE_URL", "\"https://meet.jit.si\"")
+    }
+
+    val betaKeystorePath = System.getenv("GLOBALCALL_BETA_KEYSTORE")
+    val betaSigning = if (!betaKeystorePath.isNullOrBlank()) {
+        signingConfigs.create("globalCallBeta") {
+            storeFile = file(betaKeystorePath)
+            storePassword = System.getenv("GLOBALCALL_BETA_STORE_PASSWORD")
+            keyAlias = System.getenv("GLOBALCALL_BETA_KEY_ALIAS")
+            keyPassword = System.getenv("GLOBALCALL_BETA_KEY_PASSWORD")
+        }
+    } else null
+
+    buildTypes {
+        getByName("debug") {
+            betaSigning?.let { signingConfig = it }
+        }
     }
 
     buildFeatures {
