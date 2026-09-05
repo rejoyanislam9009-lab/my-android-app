@@ -14,6 +14,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
@@ -31,6 +32,8 @@ import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.model.CallSession
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.jitsi.meet.sdk.BroadcastEvent
 import org.jitsi.meet.sdk.JitsiMeetActivity
 import org.jitsi.meet.sdk.JitsiMeetConferenceOptions
@@ -40,9 +43,14 @@ import java.net.URL
 fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish: (Boolean) -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
+    val instant = session.callId.startsWith("instant-") || repository == null
     val roomCode = remember(session.token) { session.token.removePrefix("GlobalCall-") }
     var launched by remember(session.callId) { mutableStateOf(false) }
     var joined by remember(session.callId) { mutableStateOf(false) }
+    var callStatus by remember(session.callId) {
+        mutableStateOf(if (instant || !session.outgoing) "accepted" else "ringing")
+    }
     var launchError by remember(session.callId) { mutableStateOf<String?>(null) }
     var finished by remember(session.callId) { mutableStateOf(false) }
     var permissionsGranted by remember(session.callId) {
@@ -52,18 +60,32 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
         )
     }
 
-    fun finish(updateServer: Boolean) { if (!finished) { finished = true; onFinish(updateServer) } }
+    fun finish(updateServer: Boolean) {
+        if (!finished) {
+            finished = true
+            onFinish(updateServer)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        val mic = result[Manifest.permission.RECORD_AUDIO] ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
-        val camera = !session.video || (result[Manifest.permission.CAMERA] ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED))
+        val mic = result[Manifest.permission.RECORD_AUDIO]
+            ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+        val camera = !session.video || (result[Manifest.permission.CAMERA]
+            ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED))
         permissionsGranted = mic && camera
         if (!permissionsGranted) launchError = "Camera and microphone permission are required for this call."
     }
 
     DisposableEffect(session.callId, repository) {
-        if (session.callId.startsWith("instant-") || repository == null) onDispose { }
-        else { val registration = repository.observeCallStatus(session.callId) { if (it == "declined" || it == "ended") finish(false) }; onDispose { registration.remove() } }
+        if (instant || repository == null) {
+            onDispose { }
+        } else {
+            val registration = repository.observeCallStatus(session.callId) { status ->
+                callStatus = status
+                if (status == "declined" || status == "ended") finish(false)
+            }
+            onDispose { registration.remove() }
+        }
     }
 
     DisposableEffect(session.callId) {
@@ -90,6 +112,7 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
 
     fun launchNativeConference() {
         if (launched || finished || !permissionsGranted) return
+        if (!instant && session.outgoing && callStatus != "accepted") return
         runCatching {
             val options = JitsiMeetConferenceOptions.Builder()
                 .setServerURL(URL(session.serverUrl))
@@ -109,23 +132,112 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
                 .build()
             launched = true
             JitsiMeetActivity.launch(context, options)
-        }.onFailure { launched = false; launchError = it.message ?: "Unable to start camera session" }
+        }.onFailure {
+            launched = false
+            launchError = it.message ?: "Unable to start secure call"
+        }
     }
 
-    LaunchedEffect(session.callId, permissionsGranted) {
+    LaunchedEffect(session.callId, permissionsGranted, callStatus) {
         if (!permissionsGranted) {
-            permissionLauncher.launch(buildList { add(Manifest.permission.RECORD_AUDIO); if (session.video) add(Manifest.permission.CAMERA) }.toTypedArray())
-        } else launchNativeConference()
+            permissionLauncher.launch(
+                buildList {
+                    add(Manifest.permission.RECORD_AUDIO)
+                    if (session.video) add(Manifest.permission.CAMERA)
+                }.toTypedArray()
+            )
+        } else if (instant || !session.outgoing || callStatus == "accepted") {
+            launchNativeConference()
+        }
     }
 
-    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF070A10), Color(0xFF101827), Color(0xFF06080D)))), contentAlignment = Alignment.Center) {
+    LaunchedEffect(session.callId, callStatus) {
+        if (!instant && session.outgoing && callStatus == "ringing" && repository != null) {
+            delay(45_000)
+            runCatching { repository.endCall(session.callId) }
+            finish(false)
+        }
+    }
+
+    val heading = when {
+        joined -> if (session.video) "Video call connected" else "Voice call connected"
+        !permissionsGranted -> "Permission required"
+        !instant && session.outgoing && callStatus == "ringing" -> "Calling ${session.peerName.ifBlank { "contact" }}…"
+        callStatus == "accepted" -> "Connecting secure call…"
+        else -> "Starting secure call…"
+    }
+
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.verticalGradient(listOf(Color(0xFF070A10), Color(0xFF101827), Color(0xFF06080D)))
+        ),
+        contentAlignment = Alignment.Center
+    ) {
         Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Surface(Modifier.size(96.dp), CircleShape, color = Color(0xFF1D2940)) { Box(contentAlignment = Alignment.Center) { Icon(if (session.video) Icons.Default.Videocam else Icons.Default.Call, null, tint = Color.White, modifier = Modifier.size(44.dp)) } }
+            Surface(Modifier.size(104.dp), CircleShape, color = Color(0xFF1D2940)) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(if (session.video) Icons.Default.Videocam else Icons.Default.Call, null, tint = Color.White, modifier = Modifier.size(48.dp))
+                }
+            }
             Spacer(Modifier.height(22.dp))
-            Text(if (joined) "Live call connected" else if (!permissionsGranted) "Camera access required" else "Starting secure call…", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp)); Text("Room $roomCode", color = Color.White.copy(alpha=.68f), style = MaterialTheme.typography.bodyLarge); Spacer(Modifier.height(18.dp))
-            if (launchError == null) CircularProgressIndicator(color = Color.White) else Card(shape=RoundedCornerShape(20.dp), colors=CardDefaults.cardColors(containerColor=Color(0xFF171C26))) { Column(Modifier.padding(18.dp), horizontalAlignment=Alignment.CenterHorizontally) { Text(launchError ?: "Unable to start call", color=Color(0xFFFFB4AB)); Spacer(Modifier.height(12.dp)); Button(onClick={ launchError=null; if (!permissionsGranted) permissionLauncher.launch(buildList { add(Manifest.permission.RECORD_AUDIO); if(session.video) add(Manifest.permission.CAMERA) }.toTypedArray()) else launchNativeConference() }) { Text("Allow / Try again") } } }
-            Spacer(Modifier.height(22.dp)); Row(horizontalArrangement=Arrangement.Center, verticalAlignment=Alignment.CenterVertically) { Text("Share room code", color=Color.White.copy(alpha=.65f)); IconButton(onClick={ clipboard.setText(AnnotatedString(roomCode)) }) { Icon(Icons.Default.ContentCopy,"Copy room code",tint=Color.White) } }
+            Text(heading, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(8.dp))
+            Text(
+                if (instant) "Private room $roomCode" else session.peerName.ifBlank { "GlobalCall contact" },
+                color = Color.White.copy(alpha = .68f),
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Spacer(Modifier.height(18.dp))
+
+            if (launchError == null) {
+                CircularProgressIndicator(color = Color.White)
+            } else {
+                Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF171C26))) {
+                    Column(Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(launchError ?: "Unable to start call", color = Color(0xFFFFB4AB))
+                        Spacer(Modifier.height(12.dp))
+                        Button(onClick = {
+                            launchError = null
+                            if (!permissionsGranted) {
+                                permissionLauncher.launch(
+                                    buildList {
+                                        add(Manifest.permission.RECORD_AUDIO)
+                                        if (session.video) add(Manifest.permission.CAMERA)
+                                    }.toTypedArray()
+                                )
+                            } else {
+                                launchNativeConference()
+                            }
+                        }) { Text("Allow / Try again") }
+                    }
+                }
+            }
+
+            if (instant) {
+                Spacer(Modifier.height(22.dp))
+                Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    Text("Share room code", color = Color.White.copy(alpha = .65f))
+                    IconButton(onClick = { clipboard.setText(AnnotatedString(roomCode)) }) {
+                        Icon(Icons.Default.ContentCopy, "Copy room code", tint = Color.White)
+                    }
+                }
+            }
+
+            if (!instant && session.outgoing && callStatus == "ringing") {
+                Spacer(Modifier.height(28.dp))
+                FilledIconButton(
+                    onClick = {
+                        scope.launch {
+                            repository?.endCall(session.callId)
+                            finish(false)
+                        }
+                    },
+                    modifier = Modifier.size(68.dp),
+                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))
+                ) {
+                    Icon(Icons.Default.CallEnd, "Cancel call", modifier = Modifier.size(30.dp))
+                }
+            }
         }
     }
 }
