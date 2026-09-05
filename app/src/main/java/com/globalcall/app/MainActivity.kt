@@ -40,7 +40,6 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.model.CallSession
-import com.globalcall.app.notifications.GlobalCallConnectionService
 import com.globalcall.app.ui.AuthScreen
 import com.globalcall.app.ui.CallScreen
 import com.globalcall.app.ui.GuestReadyScreen
@@ -50,6 +49,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -57,11 +57,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ensureFirebaseApp(applicationContext)?.let { app ->
-            if (FirebaseAuth.getInstance(app).currentUser != null) {
-                GlobalCallConnectionService.start(applicationContext)
-            }
-        }
         readCallIntent(intent)
         setContent {
             GlobalCallTheme {
@@ -188,6 +183,7 @@ private fun CloudAccountHost(
 ) {
     val uiContext = LocalContext.current
     val appContext = uiContext.applicationContext
+    val scope = rememberCoroutineScope()
     val runtimeResult = remember {
         runCatching {
             val firebaseApp = requireNotNull(ensureFirebaseApp(appContext)) { "Firebase could not initialize" }
@@ -215,11 +211,6 @@ private fun CloudAccountHost(
     DisposableEffect(runtime.auth) {
         val listener = FirebaseAuth.AuthStateListener { auth ->
             currentUser = auth.currentUser
-            if (auth.currentUser != null) {
-                GlobalCallConnectionService.start(appContext)
-            } else {
-                GlobalCallConnectionService.stop(appContext)
-            }
         }
         runtime.auth.addAuthStateListener(listener)
         onDispose { runtime.auth.removeAuthStateListener(listener) }
@@ -227,7 +218,14 @@ private fun CloudAccountHost(
 
     LaunchedEffect(currentUser?.uid) {
         if (currentUser != null) {
-            GlobalCallConnectionService.start(appContext)
+            // Push-first background architecture: do not keep an idle foreground service
+            // alive just to show presence. Save the current FCM token so real incoming-call
+            // pushes can wake the app without a permanent status notification.
+            FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
+                scope.launch { runCatching { runtime.repository.saveFcmToken(token) } }
+            }
+            scope.launch { runCatching { runtime.repository.setOnline(true) } }
+
             if (
                 Build.VERSION.SDK_INT >= 33 &&
                 ContextCompat.checkSelfPermission(uiContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
