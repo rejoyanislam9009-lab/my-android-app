@@ -7,6 +7,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
@@ -38,9 +40,6 @@
             </intent-filter>
         </activity>
 
-        <!-- Idle GlobalCall no longer runs a foreground service, so there is no
-             permanent "GlobalCall is active" notification. Incoming calls are
-             delivered through Firebase Cloud Messaging and use the call channel. -->
         <service
             android:name=".notifications.GlobalCallMessagingService"
             android:exported="false">
