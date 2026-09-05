@@ -1,7 +1,10 @@
 package com.globalcall.app.media
 
 import android.content.Context
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -54,6 +57,7 @@ class WebRtcCallEngine(
     private val callRef = db.collection("calls").document(callId)
     private val sessionRef = callRef.collection("webrtc").document("session")
     private val iceRef = callRef.collection("iceCandidates")
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
 
     private val eglBase = EglBase.create()
     private val audioDeviceModule = JavaAudioDeviceModule.builder(appContext)
@@ -81,6 +85,23 @@ class WebRtcCallEngine(
     private var remoteDescriptionSet = false
     private var localOfferSent = false
     private var localAnswerSent = false
+    private var cameraCaptureActive = false
+    private var cameraEnabled = video
+    private var usingFrontCamera = true
+    private var userForcedSpeaker = false
+    private var audioRoute = "earpiece"
+
+    private val audioDeviceCallback = object : AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            if (!userForcedSpeaker && hasBluetoothOutput()) routeToBluetooth()
+        }
+
+        override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            if (audioRoute == "bluetooth" && !hasBluetoothOutput()) {
+                applyDefaultRoute()
+            }
+        }
+    }
 
     init {
         PeerConnectionFactory.initialize(
@@ -100,7 +121,7 @@ class WebRtcCallEngine(
         localRenderer?.let { old -> if (old !== renderer) runCatching { old.release() } }
         localRenderer = renderer
         renderer.init(eglBase.eglBaseContext, null)
-        renderer.setMirror(true)
+        renderer.setMirror(usingFrontCamera)
         renderer.setEnableHardwareScaler(true)
         videoTrack?.addSink(renderer)
     }
@@ -120,6 +141,7 @@ class WebRtcCallEngine(
         started = true
         postState("Preparing microphone${if (video) " and camera" else ""}…")
         configureAudioRoute()
+        runCatching { audioManager.registerAudioDeviceCallback(audioDeviceCallback, main) }
 
         runCatching {
             createLocalMedia()
@@ -132,12 +154,124 @@ class WebRtcCallEngine(
         }
     }
 
-    private fun configureAudioRoute() {
-        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        runCatching {
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            audioManager.isSpeakerphoneOn = video
+    fun setMuted(muted: Boolean): Boolean {
+        audioTrack?.setEnabled(!muted)
+        return muted
+    }
+
+    fun setCameraEnabled(enabled: Boolean): Boolean {
+        if (!video) return false
+        cameraEnabled = enabled
+        videoTrack?.setEnabled(enabled)
+        if (enabled && !cameraCaptureActive) {
+            runCatching {
+                capturer?.startCapture(640, 480, 24)
+                cameraCaptureActive = true
+            }.onFailure { postError("Could not restart the camera") }
+        } else if (!enabled && cameraCaptureActive) {
+            runCatching {
+                capturer?.stopCapture()
+                cameraCaptureActive = false
+            }
         }
+        return cameraEnabled
+    }
+
+    fun switchCamera() {
+        if (!video || !cameraEnabled) return
+        capturer?.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+            override fun onCameraSwitchDone(isFrontCamera: Boolean) {
+                usingFrontCamera = isFrontCamera
+                main.post { localRenderer?.setMirror(isFrontCamera) }
+            }
+
+            override fun onCameraSwitchError(errorDescription: String?) {
+                postError(errorDescription ?: "Could not switch camera")
+            }
+        })
+    }
+
+    fun setSpeakerEnabled(enabled: Boolean): String {
+        userForcedSpeaker = enabled
+        return if (enabled) routeToSpeaker() else {
+            if (hasBluetoothOutput()) routeToBluetooth() else routeToEarpiece()
+        }
+    }
+
+    fun currentAudioRoute(): String = audioRoute
+
+    private fun configureAudioRoute() {
+        runCatching { audioManager.mode = AudioManager.MODE_IN_COMMUNICATION }
+        userForcedSpeaker = false
+        if (hasBluetoothOutput()) routeToBluetooth() else applyDefaultRoute()
+    }
+
+    private fun applyDefaultRoute(): String = if (video) routeToSpeaker() else routeToEarpiece()
+
+    private fun hasBluetoothOutput(): Boolean = runCatching {
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+            it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                (Build.VERSION.SDK_INT >= 31 && it.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
+        }
+    }.getOrDefault(false)
+
+    private fun routeToBluetooth(): String {
+        val routed = runCatching {
+            audioManager.isSpeakerphoneOn = false
+            if (Build.VERSION.SDK_INT >= 31) {
+                val device = audioManager.availableCommunicationDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || it.type == AudioDeviceInfo.TYPE_BLE_HEADSET
+                }
+                device != null && audioManager.setCommunicationDevice(device)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.startBluetoothSco()
+                @Suppress("DEPRECATION")
+                audioManager.isBluetoothScoOn = true
+                true
+            }
+        }.getOrDefault(false)
+        audioRoute = if (routed) "bluetooth" else if (video) routeToSpeaker() else routeToEarpiece()
+        return audioRoute
+    }
+
+    private fun routeToSpeaker(): String {
+        runCatching {
+            if (Build.VERSION.SDK_INT >= 31) {
+                val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+                }
+                if (speaker != null) audioManager.setCommunicationDevice(speaker)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                run { audioManager.isBluetoothScoOn = false }
+            }
+            audioManager.isSpeakerphoneOn = true
+        }
+        audioRoute = "speaker"
+        return audioRoute
+    }
+
+    private fun routeToEarpiece(): String {
+        runCatching {
+            audioManager.isSpeakerphoneOn = false
+            if (Build.VERSION.SDK_INT >= 31) {
+                val earpiece = audioManager.availableCommunicationDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                }
+                if (earpiece != null) audioManager.setCommunicationDevice(earpiece)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                run { audioManager.isBluetoothScoOn = false }
+            }
+        }
+        audioRoute = "earpiece"
+        return audioRoute
     }
 
     private fun createLocalMedia() {
@@ -153,12 +287,14 @@ class WebRtcCallEngine(
             val device = enumerator.deviceNames.firstOrNull { enumerator.isFrontFacing(it) }
                 ?: enumerator.deviceNames.firstOrNull()
                 ?: error("No camera is available on this device")
+            usingFrontCamera = enumerator.isFrontFacing(device)
             capturer = enumerator.createCapturer(device, null)
                 ?: error("Could not open the camera")
             textureHelper = SurfaceTextureHelper.create("GlobalCallCamera", eglBase.eglBaseContext)
             videoSource = factory.createVideoSource(false)
             capturer?.initialize(textureHelper, appContext, videoSource?.capturerObserver)
             capturer?.startCapture(640, 480, 24)
+            cameraCaptureActive = true
             videoTrack = factory.createVideoTrack("GC_VIDEO_$uid", videoSource).apply { setEnabled(true) }
             localRenderer?.let { videoTrack?.addSink(it) }
         }
@@ -173,7 +309,6 @@ class WebRtcCallEngine(
 
         peerConnection = requireNotNull(factory.createPeerConnection(config, object : PeerConnection.Observer {
             override fun onSignalingChange(newState: PeerConnection.SignalingState) = Unit
-
             override fun onIceConnectionChange(newState: PeerConnection.IceConnectionState) {
                 when (newState) {
                     PeerConnection.IceConnectionState.CHECKING -> postState("Connecting secure media…")
@@ -188,7 +323,6 @@ class WebRtcCallEngine(
                     else -> Unit
                 }
             }
-
             override fun onConnectionChange(newState: PeerConnection.PeerConnectionState) {
                 when (newState) {
                     PeerConnection.PeerConnectionState.CONNECTED -> {
@@ -200,10 +334,8 @@ class WebRtcCallEngine(
                     else -> Unit
                 }
             }
-
             override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
             override fun onIceGatheringChange(newState: PeerConnection.IceGatheringState) = Unit
-
             override fun onIceCandidate(candidate: IceCandidate) {
                 if (closed) return
                 iceRef.add(
@@ -216,17 +348,14 @@ class WebRtcCallEngine(
                     )
                 )
             }
-
             override fun onIceCandidatesRemoved(candidates: Array<out IceCandidate>) = Unit
             override fun onAddStream(stream: MediaStream) = Unit
             override fun onRemoveStream(stream: MediaStream) = Unit
             override fun onDataChannel(dataChannel: DataChannel) = Unit
             override fun onRenegotiationNeeded() = Unit
-
             override fun onAddTrack(receiver: RtpReceiver, mediaStreams: Array<out MediaStream>) {
                 attachRemoteTrack(receiver.track())
             }
-
             override fun onTrack(transceiver: RtpTransceiver) {
                 attachRemoteTrack(transceiver.receiver.track())
             }
@@ -265,13 +394,11 @@ class WebRtcCallEngine(
                         )
                         postState("Waiting for the other phone's media…")
                     }
-
                     override fun onSetFailure(error: String?) {
                         postError(error ?: "Could not activate microphone/camera")
                     }
                 }, description)
             }
-
             override fun onCreateFailure(error: String?) {
                 localOfferSent = false
                 postError(error ?: "Could not create the call media offer")
@@ -296,13 +423,11 @@ class WebRtcCallEngine(
                         )
                         postState("Opening secure media…")
                     }
-
                     override fun onSetFailure(error: String?) {
                         postError(error ?: "Could not answer the media connection")
                     }
                 }, description)
             }
-
             override fun onCreateFailure(error: String?) {
                 localAnswerSent = false
                 postError(error ?: "Could not create the media answer")
@@ -344,7 +469,6 @@ class WebRtcCallEngine(
                 queued.forEach { peerConnection?.addIceCandidate(it) }
                 after()
             }
-
             override fun onSetFailure(error: String?) {
                 postError(error ?: "Could not negotiate the remote media")
             }
@@ -376,7 +500,6 @@ class WebRtcCallEngine(
             PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun1.l.google.com:19302").createIceServer()
         )
-
         runCatching {
             val username = ((System.currentTimeMillis() / 1000L) + 86_400L).toString()
             val mac = Mac.getInstance("HmacSHA1")
@@ -393,7 +516,6 @@ class WebRtcCallEngine(
                 )
             ).setUsername(username).setPassword(credential).createIceServer()
         }
-
         return servers
     }
 
@@ -410,9 +532,8 @@ class WebRtcCallEngine(
         closed = true
         sessionRegistration?.remove()
         iceRegistration?.remove()
-        sessionRegistration = null
-        iceRegistration = null
-        runCatching { capturer?.stopCapture() }
+        runCatching { audioManager.unregisterAudioDeviceCallback(audioDeviceCallback) }
+        runCatching { if (cameraCaptureActive) capturer?.stopCapture() }
         videoTrack?.let { track -> localRenderer?.let { runCatching { track.removeSink(it) } } }
         remoteVideoTrack?.let { track -> remoteRenderer?.let { runCatching { track.removeSink(it) } } }
         runCatching { capturer?.dispose() }
@@ -428,9 +549,15 @@ class WebRtcCallEngine(
         runCatching { factory.dispose() }
         runCatching { audioDeviceModule.release() }
         runCatching { eglBase.release() }
-        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         runCatching {
             audioManager.isSpeakerphoneOn = false
+            if (Build.VERSION.SDK_INT >= 31) audioManager.clearCommunicationDevice()
+            else {
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                run { audioManager.isBluetoothScoOn = false }
+            }
             audioManager.mode = AudioManager.MODE_NORMAL
         }
     }
