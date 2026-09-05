@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import com.globalcall.app.calls.ActiveCallEngineStore
 import com.globalcall.app.calls.CallStateHealth
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.data.UserDiscoveryRepository
@@ -128,9 +129,19 @@ private fun GlobalCallApp(
     val initiallySignedIn = remember {
         ensureFirebaseApp(context)?.let { FirebaseAuth.getInstance(it).currentUser != null } ?: false
     }
-    var cloudMode by remember { mutableStateOf(initiallySignedIn || externalCallRequest != null) }
-    var callSession by remember { mutableStateOf<CallSession?>(null) }
-    var activeRepository by remember { mutableStateOf<GlobalCallRepository?>(null) }
+    val restoredSession = remember { ActiveCallEngineStore.session() }
+    val restoredRepository = remember(restoredSession?.callId) {
+        if (restoredSession == null) null
+        else ensureFirebaseApp(context)?.let { app ->
+            val auth = FirebaseAuth.getInstance(app)
+            if (auth.currentUser == null) null
+            else GlobalCallRepository(auth = auth, db = FirebaseFirestore.getInstance(app))
+        }
+    }
+
+    var cloudMode by remember { mutableStateOf(initiallySignedIn || externalCallRequest != null || restoredSession != null) }
+    var callSession by remember { mutableStateOf(restoredSession) }
+    var activeRepository by remember { mutableStateOf(restoredRepository) }
 
     LaunchedEffect(externalCallRequest?.callId) {
         if (externalCallRequest != null) cloudMode = true
