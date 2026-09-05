@@ -26,10 +26,7 @@ class GlobalCallRepository(
         onError: (Throwable) -> Unit
     ): ListenerRegistration = db.collection("users").addSnapshotListener { snapshot, error ->
         if (error != null) {
-            // Never surface backend/security implementation details to the calling UI.
-            // Keep the app fully usable with room-code calling while cloud directory
-            // permissions are being deployed; the listener will recover automatically.
-            onChange(emptyList())
+            onError(error)
             return@addSnapshotListener
         }
         val me = currentUid
@@ -41,11 +38,57 @@ class GlobalCallRepository(
                 email = doc.getString("email").orEmpty(),
                 bio = doc.getString("bio").orEmpty(),
                 photoUrl = doc.getString("photoUrl").orEmpty(),
+                phoneLast4 = doc.getString("phoneLast4").orEmpty(),
                 online = doc.getBoolean("online") ?: false,
                 lastSeen = doc.getTimestamp("lastSeen")
             )
         }
         onChange(users.sortedWith(compareByDescending<AppUser> { it.online }.thenBy { it.displayName.lowercase(Locale.ROOT) }))
+    }
+
+    suspend fun findUserByPhone(rawPhone: String): AppUser? {
+        val phone = PhoneDirectory.normalize(rawPhone)
+        val key = PhoneDirectory.key(phone)
+        val directory = db.collection("phoneDirectory").document(key).get().await()
+        if (!directory.exists()) return null
+        val uid = directory.getString("uid").orEmpty()
+        if (uid.isBlank() || uid == currentUid) return null
+        val profile = runCatching { db.collection("users").document(uid).get().await() }.getOrNull()
+        return AppUser(
+            uid = uid,
+            displayName = profile?.getString("displayName") ?: directory.getString("displayName").orEmpty(),
+            email = profile?.getString("email").orEmpty(),
+            bio = profile?.getString("bio").orEmpty(),
+            photoUrl = profile?.getString("photoUrl") ?: directory.getString("photoUrl").orEmpty(),
+            phoneLast4 = directory.getString("phoneLast4").orEmpty(),
+            online = profile?.getBoolean("online") ?: false,
+            lastSeen = profile?.getTimestamp("lastSeen")
+        )
+    }
+
+    suspend fun publishPhoneDirectory() {
+        val user = auth.currentUser ?: return
+        val phone = user.phoneNumber ?: return
+        val normalized = PhoneDirectory.normalize(phone)
+        val displayName = user.displayName ?: "GlobalCall user"
+        db.collection("phoneDirectory").document(PhoneDirectory.key(normalized)).set(
+            mapOf(
+                "uid" to user.uid,
+                "displayName" to displayName,
+                "photoUrl" to (user.photoUrl?.toString() ?: ""),
+                "phoneLast4" to PhoneDirectory.last4(normalized),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ),
+            SetOptions.merge()
+        ).await()
+        db.collection("users").document(user.uid).set(
+            mapOf(
+                "phoneLast4" to PhoneDirectory.last4(normalized),
+                "phoneVerified" to true,
+                "updatedAt" to FieldValue.serverTimestamp()
+            ),
+            SetOptions.merge()
+        ).await()
     }
 
     fun observeIncomingCall(
@@ -116,20 +159,18 @@ class GlobalCallRepository(
     suspend fun startCall(peer: AppUser, video: Boolean): CallSession {
         val user = requireNotNull(auth.currentUser) { "Not signed in" }
         require(peer.uid.isNotBlank()) { "Missing contact" }
-
         val blockedByMe = runCatching { db.collection("blocks").document("${user.uid}_${peer.uid}").get().await().exists() }.getOrDefault(false)
         val blockedByPeer = runCatching { db.collection("blocks").document("${peer.uid}_${user.uid}").get().await().exists() }.getOrDefault(false)
         require(!blockedByMe && !blockedByPeer) { "Calling is unavailable for this contact" }
-
         val callRef = db.collection("calls").document()
         val roomName = "GlobalCall-${callRef.id}"
-        val callerName = user.displayName ?: user.email.orEmpty()
+        val callerName = user.displayName ?: user.phoneNumber ?: user.email.orEmpty()
         callRef.set(
             mapOf(
                 "callerUid" to user.uid,
                 "callerName" to callerName,
                 "calleeUid" to peer.uid,
-                "calleeName" to peer.displayName.ifBlank { peer.email },
+                "calleeName" to peer.displayName.ifBlank { peer.email.ifBlank { "GlobalCall user" } },
                 "participantUids" to listOf(user.uid, peer.uid),
                 "roomName" to roomName,
                 "status" to "ringing",
@@ -138,11 +179,10 @@ class GlobalCallRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
         ).await()
-
         return CallSession(
             callId = callRef.id,
             peerUid = peer.uid,
-            peerName = peer.displayName.ifBlank { peer.email },
+            peerName = peer.displayName.ifBlank { peer.email.ifBlank { "GlobalCall user" } },
             serverUrl = BuildConfig.MEETING_BASE_URL,
             token = roomName,
             video = video,
@@ -152,21 +192,9 @@ class GlobalCallRepository(
 
     suspend fun acceptCall(invite: CallInvite): CallSession {
         db.collection("calls").document(invite.id).update(
-            mapOf(
-                "status" to "accepted",
-                "acceptedAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
+            mapOf("status" to "accepted", "acceptedAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())
         ).await()
-        return CallSession(
-            callId = invite.id,
-            peerUid = invite.callerUid,
-            peerName = invite.callerName,
-            serverUrl = BuildConfig.MEETING_BASE_URL,
-            token = invite.roomName.ifBlank { "GlobalCall-${invite.id}" },
-            video = invite.video,
-            outgoing = false
-        )
+        return CallSession(invite.id, invite.callerUid, invite.callerName, BuildConfig.MEETING_BASE_URL, invite.roomName.ifBlank { "GlobalCall-${invite.id}" }, invite.video, false)
     }
 
     suspend fun loadInvite(callId: String): CallInvite? {
@@ -186,25 +214,11 @@ class GlobalCallRepository(
     }
 
     suspend fun declineCall(callId: String) {
-        db.collection("calls").document(callId).update(
-            mapOf(
-                "status" to "declined",
-                "endedAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp()
-            )
-        ).await()
+        db.collection("calls").document(callId).update(mapOf("status" to "declined", "endedAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())).await()
     }
 
     suspend fun endCall(callId: String) {
-        runCatching {
-            db.collection("calls").document(callId).update(
-                mapOf(
-                    "status" to "ended",
-                    "endedAt" to FieldValue.serverTimestamp(),
-                    "updatedAt" to FieldValue.serverTimestamp()
-                )
-            ).await()
-        }
+        runCatching { db.collection("calls").document(callId).update(mapOf("status" to "ended", "endedAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())).await() }
     }
 
     suspend fun updateProfile(displayName: String, bio: String) {
@@ -214,55 +228,37 @@ class GlobalCallRepository(
         require(bio.length <= 120) { "Bio must be 120 characters or less" }
         user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(cleanName).build()).await()
         db.collection("users").document(user.uid).set(
-            mapOf(
-                "uid" to user.uid,
-                "displayName" to cleanName,
-                "email" to user.email.orEmpty().lowercase(Locale.ROOT),
-                "bio" to bio.trim(),
-                "locale" to Locale.getDefault().toLanguageTag(),
-                "updatedAt" to FieldValue.serverTimestamp()
-            ),
+            mapOf("uid" to user.uid, "displayName" to cleanName, "email" to user.email.orEmpty().lowercase(Locale.ROOT), "bio" to bio.trim(), "locale" to Locale.getDefault().toLanguageTag(), "updatedAt" to FieldValue.serverTimestamp()),
             SetOptions.merge()
         ).await()
+        runCatching { publishPhoneDirectory() }
     }
 
     suspend fun saveFcmToken(token: String) {
         val uid = currentUid ?: return
-        db.collection("devices").document(uid).set(
-            mapOf(
-                "uid" to uid,
-                "fcmToken" to token,
-                "platform" to "android",
-                "updatedAt" to FieldValue.serverTimestamp()
-            ),
-            SetOptions.merge()
-        ).await()
+        db.collection("devices").document(uid).set(mapOf("uid" to uid, "fcmToken" to token, "platform" to "android", "updatedAt" to FieldValue.serverTimestamp()), SetOptions.merge()).await()
     }
 
     suspend fun setOnline(online: Boolean) {
         val user = auth.currentUser ?: return
+        val phone = user.phoneNumber
         db.collection("users").document(user.uid).set(
             mapOf(
                 "uid" to user.uid,
-                "displayName" to (user.displayName ?: user.email.orEmpty()),
+                "displayName" to (user.displayName ?: phone ?: user.email.orEmpty()),
                 "email" to user.email.orEmpty().lowercase(Locale.ROOT),
+                "phoneLast4" to (phone?.let { runCatching { PhoneDirectory.last4(PhoneDirectory.normalize(it)) }.getOrDefault("") } ?: ""),
                 "online" to online,
                 "lastSeen" to FieldValue.serverTimestamp()
-            ),
-            SetOptions.merge()
+            ), SetOptions.merge()
         ).await()
+        if (online) runCatching { publishPhoneDirectory() }
     }
 
     suspend fun blockUser(peerUid: String) {
         val uid = requireNotNull(currentUid) { "Not signed in" }
         require(peerUid != uid)
-        db.collection("blocks").document("${uid}_$peerUid").set(
-            mapOf(
-                "blockerUid" to uid,
-                "blockedUid" to peerUid,
-                "createdAt" to FieldValue.serverTimestamp()
-            )
-        ).await()
+        db.collection("blocks").document("${uid}_$peerUid").set(mapOf("blockerUid" to uid, "blockedUid" to peerUid, "createdAt" to FieldValue.serverTimestamp())).await()
     }
 
     suspend fun unblockUser(peerUid: String) {
@@ -272,14 +268,6 @@ class GlobalCallRepository(
 
     suspend fun reportUser(peerUid: String, reason: String) {
         val uid = requireNotNull(currentUid) { "Not signed in" }
-        db.collection("reports").add(
-            mapOf(
-                "reporterUid" to uid,
-                "reportedUid" to peerUid,
-                "reason" to reason.take(300),
-                "createdAt" to FieldValue.serverTimestamp(),
-                "status" to "open"
-            )
-        ).await()
+        db.collection("reports").add(mapOf("reporterUid" to uid, "reportedUid" to peerUid, "reason" to reason.take(300), "createdAt" to FieldValue.serverTimestamp(), "status" to "open")).await()
     }
 }
