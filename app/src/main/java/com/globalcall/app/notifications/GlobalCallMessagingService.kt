@@ -22,12 +22,14 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 class GlobalCallMessagingService : FirebaseMessagingService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -48,18 +50,21 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        if (firebaseAppOrNull(this) == null) return
+        val app = firebaseAppOrNull(this) ?: return
         val data = message.data
         when (data["type"]) {
             "incoming_call" -> {
                 val callId = data["callId"].orEmpty()
                 if (callId.isBlank()) return
-                showIncomingCall(
-                    callId = callId,
-                    callerName = data["callerName"].orEmpty().ifBlank { "GlobalCall user" },
-                    callerUid = data["callerUid"].orEmpty(),
-                    video = data["video"] != "false"
-                )
+                serviceScope.launch {
+                    handleIncomingCall(
+                        app = app,
+                        callId = callId,
+                        callerName = data["callerName"].orEmpty().ifBlank { "GlobalCall user" },
+                        callerUid = data["callerUid"].orEmpty(),
+                        video = data["video"] != "false"
+                    )
+                }
             }
             "chat_message" -> {
                 val senderUid = data["senderUid"].orEmpty()
@@ -71,6 +76,55 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
                 )
             }
         }
+    }
+
+    private suspend fun handleIncomingCall(
+        app: FirebaseApp,
+        callId: String,
+        callerName: String,
+        callerUid: String,
+        video: Boolean
+    ) {
+        val auth = FirebaseAuth.getInstance(app)
+        val uid = auth.currentUser?.uid ?: return
+        val db = FirebaseFirestore.getInstance(app)
+        val userRef = db.collection("users").document(uid)
+        val profile = runCatching { userRef.get().await() }.getOrNull()
+        val state = profile?.getString("callState").orEmpty()
+        val currentCallId = profile?.getString("currentCallId").orEmpty()
+        val stateAt = profile?.getTimestamp("callStateUpdatedAt")?.seconds ?: 0L
+        val age = ((System.currentTimeMillis() / 1000L) - stateAt).coerceAtLeast(0L)
+        val busy = currentCallId.isNotBlank() && currentCallId != callId && when (state) {
+            "active" -> age < 6 * 60 * 60L
+            "calling", "ringing" -> age < 2 * 60L
+            else -> false
+        }
+
+        if (busy) {
+            runCatching {
+                db.collection("calls").document(callId).update(
+                    mapOf(
+                        "status" to "busy",
+                        "endedAt" to FieldValue.serverTimestamp(),
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                ).await()
+            }
+            return
+        }
+
+        runCatching {
+            userRef.set(
+                mapOf(
+                    "callState" to "ringing",
+                    "currentCallId" to callId,
+                    "callStateUpdatedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+        }
+        showIncomingCall(callId, callerName, callerUid, video)
     }
 
     private fun showChatMessage(senderUid: String, senderName: String, text: String) {
@@ -86,11 +140,16 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val sender = Person.Builder().setName(senderName).setKey(senderUid).build()
         val notification = NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.sym_action_chat)
             .setContentTitle(senderName)
             .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setStyle(
+                NotificationCompat.MessagingStyle(sender)
+                    .setConversationTitle(senderName)
+                    .addMessage(text, System.currentTimeMillis(), sender)
+            )
             .setContentIntent(pendingIntent)
             .setAutoCancel(true)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
@@ -228,21 +287,33 @@ class CallActionReceiver : BroadcastReceiver() {
 
         val app = firebaseAppOrNull(context) ?: return
         val auth = runCatching { FirebaseAuth.getInstance(app) }.getOrNull() ?: return
-        if (auth.currentUser == null) return
-
+        val uid = auth.currentUser?.uid ?: return
+        val db = FirebaseFirestore.getInstance(app)
         val pending = goAsync()
-        FirebaseFirestore.getInstance(app).collection("calls").document(callId)
-            .update(
+
+        db.runBatch { batch ->
+            batch.update(
+                db.collection("calls").document(callId),
                 mapOf(
                     "status" to "declined",
                     "endedAt" to FieldValue.serverTimestamp(),
                     "updatedAt" to FieldValue.serverTimestamp()
                 )
             )
-            .addOnCompleteListener {
-                NotificationManagerCompat.from(context).cancel(callId.hashCode())
-                pending.finish()
-            }
+            batch.set(
+                db.collection("users").document(uid),
+                mapOf(
+                    "callState" to "idle",
+                    "currentCallId" to "",
+                    "callStateUpdatedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            )
+        }.addOnCompleteListener {
+            NotificationManagerCompat.from(context).cancel(callId.hashCode())
+            pending.finish()
+        }
     }
 
     companion object {
