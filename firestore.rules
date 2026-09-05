@@ -14,6 +14,11 @@ service cloud.firestore {
         && request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participantUids;
     }
 
+    function isConnectionParticipant(connectionId) {
+      return signedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/connections/$(connectionId)).data.participantUids;
+    }
+
     match /users/{uid} {
       allow read: if signedIn();
       allow create, update, delete: if signedIn() && request.auth.uid == uid;
@@ -40,6 +45,26 @@ service cloud.firestore {
         && request.resource.data.participantUids == resource.data.participantUids
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['updatedAt']);
       allow delete: if isParticipant(resource.data);
+    }
+
+    match /conversations/{connectionId} {
+      allow read: if isConnectionParticipant(connectionId);
+      allow create, update: if isConnectionParticipant(connectionId)
+        && request.resource.data.participantUids
+          == get(/databases/$(database)/documents/connections/$(connectionId)).data.participantUids;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isConnectionParticipant(connectionId);
+        allow create: if isConnectionParticipant(connectionId)
+          && request.resource.data.senderUid == request.auth.uid
+          && request.resource.data.receiverUid is string
+          && request.resource.data.receiverUid != request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000;
+        allow update, delete: if false;
+      }
     }
 
     match /phoneDirectory/{phoneHash} {
@@ -88,7 +113,6 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Native WebRTC signaling is private to the two call participants.
     match /calls/{callId}/webrtc/{signalId} {
       allow read, create, update, delete: if isCallParticipant(callId);
     }
