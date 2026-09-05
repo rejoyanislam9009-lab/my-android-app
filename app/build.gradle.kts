@@ -18,8 +18,8 @@ android {
         applicationId = "com.globalcall.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.10.0"
+        versionCode = 11
+        versionName = "1.0.0"
 
         buildConfigField("String", "FIREBASE_API_KEY", "\"AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"guide-c4c2c\"")
@@ -29,7 +29,6 @@ android {
         buildConfigField("String", "MEETING_BASE_URL", "\"https://meet.jit.si\"")
     }
 
-    // Produce smaller device-specific APKs while keeping a universal fallback.
     splits {
         abi {
             isEnable = true
