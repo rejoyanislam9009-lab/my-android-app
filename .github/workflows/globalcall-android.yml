@@ -31,11 +31,14 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build debug APK
+      - name: Build optimized debug APKs
         run: gradle --no-daemon assembleDebug
-      - name: Upload APK
+      - name: List APK sizes
+        run: ls -lh app/build/outputs/apk/debug/*.apk
+      - name: Upload optimized APKs
         uses: actions/upload-artifact@v4
         with:
-          name: globalcall-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: globalcall-v0.10-optimized-apks
+          path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 30
