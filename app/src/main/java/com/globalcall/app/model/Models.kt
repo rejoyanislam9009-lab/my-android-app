@@ -12,7 +12,9 @@ data class AppUser(
     val phoneLast4: String = "",
     val callCode: String = "",
     val online: Boolean = false,
-    val lastSeen: Timestamp? = null
+    val lastSeen: Timestamp? = null,
+    val callState: String = "idle",
+    val currentCallId: String = ""
 )
 
 data class CallInvite(
@@ -41,6 +43,22 @@ data class CallRecord(
     fun peerUid(currentUid: String): String = if (callerUid == currentUid) calleeUid else callerUid
     fun peerName(currentUid: String): String = if (callerUid == currentUid) calleeName else callerName
     fun isOutgoing(currentUid: String): Boolean = callerUid == currentUid
+
+    fun durationSeconds(): Long? {
+        val start = acceptedAt?.seconds ?: return null
+        val end = endedAt?.seconds ?: return null
+        return (end - start).coerceAtLeast(0L)
+    }
+
+    fun outcomeFor(currentUid: String): String = when (status) {
+        "missed" -> if (isOutgoing(currentUid)) "No answer" else "Missed"
+        "busy" -> "Busy"
+        "declined" -> if (isOutgoing(currentUid)) "Declined" else "You declined"
+        "ended" -> "Completed"
+        "accepted" -> "Connected"
+        "ringing" -> "Ringing"
+        else -> status.replaceFirstChar { it.uppercase() }
+    }
 }
 
 data class CallSession(
@@ -55,6 +73,7 @@ data class CallSession(
 
 enum class MainTab {
     Calls,
+    Chats,
     People,
     Profile
 }
