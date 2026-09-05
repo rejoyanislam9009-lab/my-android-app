@@ -9,13 +9,17 @@ service cloud.firestore {
       return signedIn() && request.auth.uid in data.participantUids;
     }
 
+    function isCallParticipant(callId) {
+      return signedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participantUids;
+    }
+
     match /users/{uid} {
       allow read: if signedIn();
       allow create, update, delete: if signedIn() && request.auth.uid == uid;
     }
 
     match /callCodes/{callCode} {
-      // Account codes support exact lookup only; the directory cannot be listed.
       allow get: if signedIn();
       allow list: if false;
       allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
@@ -82,6 +86,15 @@ service cloud.firestore {
         );
 
       allow delete: if false;
+    }
+
+    // Native WebRTC signaling is private to the two call participants.
+    match /calls/{callId}/webrtc/{signalId} {
+      allow read, create, update, delete: if isCallParticipant(callId);
+    }
+
+    match /calls/{callId}/iceCandidates/{candidateId} {
+      allow read, create, update, delete: if isCallParticipant(callId);
     }
 
     match /blocks/{blockId} {
