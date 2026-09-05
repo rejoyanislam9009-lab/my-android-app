@@ -1,5 +1,6 @@
 package com.globalcall.app.ui
 
+import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -8,42 +9,144 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.globalcall.app.R
+import com.globalcall.app.data.PhoneDirectory
+import com.google.firebase.FirebaseException
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.PhoneAuthCredential
+import com.google.firebase.auth.PhoneAuthOptions
+import com.google.firebase.auth.PhoneAuthProvider
 import com.google.firebase.auth.UserProfileChangeRequest
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 @Composable
 fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
-    val db = remember { FirebaseFirestore.getInstance() }
+    val context = LocalContext.current
+    val activity = context as? Activity
+    val db = remember(auth) { FirebaseFirestore.getInstance(auth.app) }
     val scope = rememberCoroutineScope()
+    var phoneMode by remember { mutableStateOf(true) }
     var createMode by remember { mutableStateOf(false) }
     var displayName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var phone by remember { mutableStateOf("") }
+    var otp by remember { mutableStateOf("") }
+    var verificationId by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var info by remember { mutableStateOf<String?>(null) }
 
+    suspend fun persistSignedInUser(phoneNumber: String? = auth.currentUser?.phoneNumber) {
+        val user = requireNotNull(auth.currentUser)
+        val normalized = phoneNumber?.let { PhoneDirectory.normalize(it) }
+        val fallbackName = user.displayName?.takeIf { it.isNotBlank() }
+            ?: normalized?.let { "User ${PhoneDirectory.last4(it)}" }
+            ?: user.email?.substringBefore('@')
+            ?: "GlobalCall user"
+        if (user.displayName.isNullOrBlank()) {
+            user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(fallbackName).build()).await()
+        }
+        db.collection("users").document(user.uid).set(
+            mapOf(
+                "uid" to user.uid,
+                "displayName" to fallbackName,
+                "email" to user.email.orEmpty().lowercase(Locale.ROOT),
+                "phoneLast4" to (normalized?.let(PhoneDirectory::last4) ?: ""),
+                "phoneVerified" to (normalized != null),
+                "bio" to "",
+                "locale" to Locale.getDefault().toLanguageTag(),
+                "online" to true,
+                "lastSeen" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ), SetOptions.merge()
+        ).await()
+        if (normalized != null) {
+            db.collection("phoneDirectory").document(PhoneDirectory.key(normalized)).set(
+                mapOf(
+                    "uid" to user.uid,
+                    "displayName" to fallbackName,
+                    "photoUrl" to (user.photoUrl?.toString() ?: ""),
+                    "phoneLast4" to PhoneDirectory.last4(normalized),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ), SetOptions.merge()
+            ).await()
+        }
+    }
+
+    fun completePhoneCredential(credential: PhoneAuthCredential) {
+        scope.launch {
+            loading = true
+            error = null
+            runCatching {
+                auth.signInWithCredential(credential).await()
+                persistSignedInUser()
+            }.onFailure { error = it.message ?: "Could not verify this number" }
+            loading = false
+        }
+    }
+
+    val callbacks = remember(auth) {
+        object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
+            override fun onVerificationCompleted(credential: PhoneAuthCredential) {
+                completePhoneCredential(credential)
+            }
+
+            override fun onVerificationFailed(exception: FirebaseException) {
+                loading = false
+                error = exception.message ?: "Phone verification failed"
+            }
+
+            override fun onCodeSent(
+                id: String,
+                token: PhoneAuthProvider.ForceResendingToken
+            ) {
+                verificationId = id
+                loading = false
+                info = "Verification code sent"
+            }
+        }
+    }
+
+    fun sendOtp() {
+        if (activity == null) {
+            error = "Unable to start phone verification on this device"
+            return
+        }
+        val normalized = runCatching { PhoneDirectory.normalize(phone) }
+            .getOrElse { error = it.message; return }
+        loading = true
+        error = null
+        info = null
+        val options = PhoneAuthOptions.newBuilder(auth)
+            .setPhoneNumber(normalized)
+            .setTimeout(60L, TimeUnit.SECONDS)
+            .setActivity(activity)
+            .setCallbacks(callbacks)
+            .build()
+        PhoneAuthProvider.verifyPhoneNumber(options)
+    }
+
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(24.dp),
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
         Card(
@@ -53,158 +156,158 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
         ) {
             Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
-                    modifier = Modifier
-                        .size(72.dp)
-                        .clip(RoundedCornerShape(22.dp))
-                        .background(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.size(72.dp).clip(RoundedCornerShape(22.dp)).background(MaterialTheme.colorScheme.primary),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        Icons.Default.Videocam,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onPrimary,
-                        modifier = Modifier.size(38.dp)
-                    )
+                    Icon(Icons.Default.Videocam, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(38.dp))
                 }
                 Spacer(Modifier.height(16.dp))
                 Text("GlobalCall", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(
-                    androidx.compose.ui.res.stringResource(R.string.welcome),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(24.dp))
+                Text("Call people by verified phone number", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(22.dp))
 
-                Row(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
-                        selected = !createMode,
-                        onClick = { createMode = false; error = null },
-                        label = { Text(androidx.compose.ui.res.stringResource(R.string.sign_in)) },
+                        selected = phoneMode,
+                        onClick = { phoneMode = true; error = null; info = null },
+                        label = { Text("Phone") },
+                        leadingIcon = { Icon(Icons.Default.Phone, null) },
                         modifier = Modifier.weight(1f)
                     )
-                    Spacer(Modifier.width(8.dp))
                     FilterChip(
-                        selected = createMode,
-                        onClick = { createMode = true; error = null },
-                        label = { Text(androidx.compose.ui.res.stringResource(R.string.create_account)) },
+                        selected = !phoneMode,
+                        onClick = { phoneMode = false; error = null; info = null },
+                        label = { Text("Email") },
+                        leadingIcon = { Icon(Icons.Default.Email, null) },
                         modifier = Modifier.weight(1f)
                     )
                 }
                 Spacer(Modifier.height(16.dp))
 
-                if (createMode) {
+                if (phoneMode) {
                     OutlinedTextField(
-                        value = displayName,
-                        onValueChange = { displayName = it.take(50) },
-                        label = { Text(androidx.compose.ui.res.stringResource(R.string.display_name)) },
-                        leadingIcon = { Icon(Icons.Default.Person, null) },
+                        value = phone,
+                        onValueChange = { phone = it.take(18) },
+                        label = { Text("Phone with country code") },
+                        placeholder = { Text("+8801... / +9665...") },
+                        leadingIcon = { Icon(Icons.Default.Phone, null) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp)
                     )
                     Spacer(Modifier.height(10.dp))
-                }
-
-                OutlinedTextField(
-                    value = email,
-                    onValueChange = { email = it.trim() },
-                    label = { Text(androidx.compose.ui.res.stringResource(R.string.email)) },
-                    leadingIcon = { Icon(Icons.Default.Email, null) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp)
-                )
-                Spacer(Modifier.height(10.dp))
-
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text(androidx.compose.ui.res.stringResource(R.string.password)) },
-                    leadingIcon = { Icon(Icons.Default.Lock, null) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(16.dp)
-                )
-
-                error?.let {
+                    if (verificationId != null) {
+                        OutlinedTextField(
+                            value = otp,
+                            onValueChange = { otp = it.filter(Char::isDigit).take(6) },
+                            label = { Text("6-digit verification code") },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                    }
+                } else {
+                    Row(Modifier.fillMaxWidth()) {
+                        FilterChip(
+                            selected = !createMode,
+                            onClick = { createMode = false; error = null },
+                            label = { Text("Sign in") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        FilterChip(
+                            selected = createMode,
+                            onClick = { createMode = true; error = null },
+                            label = { Text("Create account") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    if (createMode) {
+                        OutlinedTextField(
+                            value = displayName,
+                            onValueChange = { displayName = it.take(50) },
+                            label = { Text("Display name") },
+                            leadingIcon = { Icon(Icons.Default.Person, null) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = { email = it.trim() },
+                        label = { Text("Email") },
+                        leadingIcon = { Icon(Icons.Default.Email, null) },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
+                    )
                     Spacer(Modifier.height(10.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { Text("Password") },
+                        leadingIcon = { Icon(Icons.Default.Lock, null) },
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp)
+                    )
                 }
-                info?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
-                }
+
+                error?.let { Spacer(Modifier.height(10.dp)); Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                info?.let { Spacer(Modifier.height(10.dp)); Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall) }
 
                 Spacer(Modifier.height(18.dp))
                 Button(
                     onClick = {
-                        scope.launch {
-                            loading = true
-                            error = null
-                            info = null
-                            try {
-                                if (createMode) {
-                                    require(displayName.trim().length >= 2) { "Enter your name" }
-                                    val result = auth.createUserWithEmailAndPassword(email, password).await()
-                                    val user = requireNotNull(result.user)
-                                    user.updateProfile(
-                                        UserProfileChangeRequest.Builder().setDisplayName(displayName.trim()).build()
-                                    ).await()
-                                    runCatching {
-                                        db.collection("users").document(user.uid).set(
-                                            mapOf(
-                                                "uid" to user.uid,
-                                                "displayName" to displayName.trim(),
-                                                "email" to email.lowercase(Locale.ROOT),
-                                                "bio" to "",
-                                                "locale" to Locale.getDefault().toLanguageTag(),
-                                                "online" to true,
-                                                "createdAt" to FieldValue.serverTimestamp(),
-                                                "lastSeen" to FieldValue.serverTimestamp()
-                                            )
-                                        ).await()
+                        if (phoneMode) {
+                            val id = verificationId
+                            if (id == null) sendOtp()
+                            else completePhoneCredential(PhoneAuthProvider.getCredential(id, otp))
+                        } else {
+                            scope.launch {
+                                loading = true
+                                error = null
+                                try {
+                                    if (createMode) {
+                                        require(displayName.trim().length >= 2) { "Enter your name" }
+                                        val result = auth.createUserWithEmailAndPassword(email, password).await()
+                                        val user = requireNotNull(result.user)
+                                        user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(displayName.trim()).build()).await()
+                                        persistSignedInUser(null)
+                                    } else {
+                                        auth.signInWithEmailAndPassword(email, password).await()
+                                        persistSignedInUser(null)
                                     }
-                                } else {
-                                    auth.signInWithEmailAndPassword(email, password).await()
+                                } catch (t: Throwable) {
+                                    error = t.message ?: "Unable to continue"
+                                } finally {
+                                    loading = false
                                 }
-                            } catch (t: Throwable) {
-                                error = t.message ?: "Unable to continue"
-                            } finally {
-                                loading = false
                             }
                         }
                     },
-                    enabled = !loading && email.isNotBlank() && password.length >= 6 &&
-                        (!createMode || displayName.trim().length >= 2),
+                    enabled = !loading && if (phoneMode) {
+                        phone.isNotBlank() && (verificationId == null || otp.length == 6)
+                    } else {
+                        email.isNotBlank() && password.length >= 6 && (!createMode || displayName.trim().length >= 2)
+                    },
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     shape = RoundedCornerShape(16.dp)
                 ) {
-                    if (loading) {
-                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text(
-                            if (createMode) androidx.compose.ui.res.stringResource(R.string.create_account)
-                            else androidx.compose.ui.res.stringResource(R.string.sign_in)
-                        )
-                    }
+                    if (loading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    else Text(if (phoneMode) if (verificationId == null) "Send OTP" else "Verify & continue" else if (createMode) "Create account" else "Sign in")
                 }
 
-                if (!createMode) {
-                    TextButton(onClick = {
-                        if (email.isBlank()) {
-                            error = "Enter your email first"
-                        } else {
-                            scope.launch {
-                                runCatching { auth.sendPasswordResetEmail(email).await() }
-                                    .onSuccess { info = "Password reset email sent" }
-                                    .onFailure { error = it.message }
-                            }
-                        }
-                    }) {
-                        Text(androidx.compose.ui.res.stringResource(R.string.forgot_password))
-                    }
+                if (phoneMode && verificationId != null) {
+                    TextButton(onClick = { verificationId = null; otp = ""; info = null }) { Text("Change number") }
                 }
 
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
