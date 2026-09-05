@@ -74,12 +74,29 @@ private fun googleAuthMessage(t: Throwable): String {
     }
 }
 
+private fun emailAuthMessage(t: Throwable): String {
+    val raw = t.message.orEmpty()
+    return when {
+        raw.contains("credential", ignoreCase = true) ||
+            raw.contains("password", ignoreCase = true) && raw.contains("invalid", ignoreCase = true) ->
+            "Email or password is incorrect. Use Forgot password? to recover your account."
+        raw.contains("user", ignoreCase = true) && raw.contains("not found", ignoreCase = true) ->
+            "No Email/Password account was found for this email. You can create an account or continue with Google."
+        raw.contains("network", ignoreCase = true) ->
+            "Check your internet connection and try again."
+        raw.contains("too many", ignoreCase = true) ->
+            "Too many attempts. Please wait a little and try again."
+        else -> raw.takeIf { it.isNotBlank() } ?: "Unable to sign in"
+    }
+}
+
 @Composable
 fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
     val context = LocalContext.current
     val activity = context as? Activity
     val db = remember(auth) { FirebaseFirestore.getInstance(auth.app) }
     val scope = rememberCoroutineScope()
+
     var phoneMode by remember { mutableStateOf(true) }
     var createMode by remember { mutableStateOf(false) }
     var displayName by remember { mutableStateOf("") }
@@ -89,6 +106,7 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
     var otp by remember { mutableStateOf("") }
     var verificationId by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var resettingPassword by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var info by remember { mutableStateOf<String?>(null) }
 
@@ -99,9 +117,13 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
             ?: normalized?.let { "User ${PhoneDirectory.last4(it)}" }
             ?: user.email?.substringBefore('@')
             ?: "GlobalCall user"
+
         if (user.displayName.isNullOrBlank()) {
-            user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(fallbackName).build()).await()
+            user.updateProfile(
+                UserProfileChangeRequest.Builder().setDisplayName(fallbackName).build()
+            ).await()
         }
+
         db.collection("users").document(user.uid).set(
             mapOf(
                 "uid" to user.uid,
@@ -114,8 +136,10 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                 "online" to true,
                 "lastSeen" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
-            ), SetOptions.merge()
+            ),
+            SetOptions.merge()
         ).await()
+
         if (normalized != null) {
             db.collection("phoneDirectory").document(PhoneDirectory.key(normalized)).set(
                 mapOf(
@@ -124,7 +148,8 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                     "photoUrl" to (user.photoUrl?.toString() ?: ""),
                     "phoneLast4" to PhoneDirectory.last4(normalized),
                     "updatedAt" to FieldValue.serverTimestamp()
-                ), SetOptions.merge()
+                ),
+                SetOptions.merge()
             ).await()
         }
     }
@@ -138,10 +163,13 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
         GoogleSignIn.getClient(context, options)
     }
 
-    val googleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+    val googleLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
         if (result.data == null) return@rememberLauncherForActivityResult
         val account = try {
-            GoogleSignIn.getSignedInAccountFromIntent(result.data).getResult(ApiException::class.java)
+            GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                .getResult(ApiException::class.java)
         } catch (e: ApiException) {
             if (e.statusCode != GoogleSignInStatusCodes.SIGN_IN_CANCELLED) {
                 error = if (e.statusCode == 10) {
@@ -152,6 +180,7 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
             }
             null
         }
+
         if (account?.idToken != null) {
             scope.launch {
                 loading = true
@@ -175,10 +204,13 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
         scope.launch {
             loading = true
             error = null
+            info = null
             runCatching {
                 auth.signInWithCredential(credential).await()
                 persistSignedInUser()
-            }.onFailure { error = phoneAuthMessage(it) }
+            }.onFailure {
+                error = phoneAuthMessage(it)
+            }
             loading = false
         }
     }
@@ -211,21 +243,58 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
             return
         }
         val normalized = runCatching { PhoneDirectory.normalize(phone) }
-            .getOrElse { error = it.message; return }
+            .getOrElse {
+                error = it.message
+                return
+            }
         loading = true
         error = null
         info = null
-        val options = PhoneAuthOptions.newBuilder(auth)
-            .setPhoneNumber(normalized)
-            .setTimeout(60L, TimeUnit.SECONDS)
-            .setActivity(activity)
-            .setCallbacks(callbacks)
-            .build()
-        PhoneAuthProvider.verifyPhoneNumber(options)
+        PhoneAuthProvider.verifyPhoneNumber(
+            PhoneAuthOptions.newBuilder(auth)
+                .setPhoneNumber(normalized)
+                .setTimeout(60L, TimeUnit.SECONDS)
+                .setActivity(activity)
+                .setCallbacks(callbacks)
+                .build()
+        )
+    }
+
+    fun sendPasswordReset() {
+        val target = email.trim().lowercase(Locale.ROOT)
+        if (target.isBlank() || !target.contains('@')) {
+            error = "Enter your account email first, then tap Forgot password?"
+            info = null
+            return
+        }
+        scope.launch {
+            resettingPassword = true
+            error = null
+            info = null
+            runCatching {
+                auth.sendPasswordResetEmail(target).await()
+            }.onSuccess {
+                info = "Password reset link sent to $target. Check Inbox and Spam, then set a new password."
+            }.onFailure {
+                val raw = it.message.orEmpty()
+                error = when {
+                    raw.contains("network", ignoreCase = true) ->
+                        "Check your internet connection and try sending the reset email again."
+                    raw.contains("too many", ignoreCase = true) ->
+                        "Too many reset attempts. Please wait a little and try again."
+                    else ->
+                        "Could not send the reset email. Check the email address and try again."
+                }
+            }
+            resettingPassword = false
+        }
     }
 
     Box(
-        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
         Card(
@@ -233,16 +302,35 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
             shape = RoundedCornerShape(28.dp),
             elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
-            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
                 Box(
-                    modifier = Modifier.size(72.dp).clip(RoundedCornerShape(22.dp)).background(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier
+                        .size(72.dp)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(MaterialTheme.colorScheme.primary),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.Videocam, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(38.dp))
+                    Icon(
+                        Icons.Default.Videocam,
+                        null,
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(38.dp)
+                    )
                 }
+
                 Spacer(Modifier.height(16.dp))
-                Text("GlobalCall", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("Create your account and connect instantly", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    "GlobalCall",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    "Create your account and connect instantly",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(Modifier.height(20.dp))
 
                 Button(
@@ -251,7 +339,7 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                         info = null
                         googleLauncher.launch(googleClient.signInIntent)
                     },
-                    enabled = !loading,
+                    enabled = !loading && !resettingPassword,
                     modifier = Modifier.fillMaxWidth().height(54.dp),
                     shape = RoundedCornerShape(16.dp)
                 ) {
@@ -271,26 +359,42 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     HorizontalDivider(Modifier.weight(1f))
-                    Text("  or  ", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                    Text(
+                        "  or  ",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium
+                    )
                     HorizontalDivider(Modifier.weight(1f))
                 }
 
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     FilterChip(
                         selected = phoneMode,
-                        onClick = { phoneMode = true; error = null; info = null },
+                        onClick = {
+                            phoneMode = true
+                            error = null
+                            info = null
+                        },
                         label = { Text("Phone") },
                         leadingIcon = { Icon(Icons.Default.Phone, null) },
                         modifier = Modifier.weight(1f)
                     )
                     FilterChip(
                         selected = !phoneMode,
-                        onClick = { phoneMode = false; error = null; info = null },
+                        onClick = {
+                            phoneMode = false
+                            error = null
+                            info = null
+                        },
                         label = { Text("Email") },
                         leadingIcon = { Icon(Icons.Default.Email, null) },
                         modifier = Modifier.weight(1f)
                     )
                 }
+
                 Spacer(Modifier.height(16.dp))
 
                 if (phoneMode) {
@@ -328,18 +432,27 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                     Row(Modifier.fillMaxWidth()) {
                         FilterChip(
                             selected = !createMode,
-                            onClick = { createMode = false; error = null },
+                            onClick = {
+                                createMode = false
+                                error = null
+                                info = null
+                            },
                             label = { Text("Sign in") },
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(Modifier.width(8.dp))
                         FilterChip(
                             selected = createMode,
-                            onClick = { createMode = true; error = null },
+                            onClick = {
+                                createMode = true
+                                error = null
+                                info = null
+                            },
                             label = { Text("Create account") },
                             modifier = Modifier.weight(1f)
                         )
                     }
+
                     Spacer(Modifier.height(12.dp))
                     if (createMode) {
                         OutlinedTextField(
@@ -353,9 +466,14 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                         )
                         Spacer(Modifier.height(10.dp))
                     }
+
                     OutlinedTextField(
                         value = email,
-                        onValueChange = { email = it.trim() },
+                        onValueChange = {
+                            email = it.trim()
+                            error = null
+                            info = null
+                        },
                         label = { Text("Email") },
                         leadingIcon = { Icon(Icons.Default.Email, null) },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
@@ -366,7 +484,10 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
                         value = password,
-                        onValueChange = { password = it },
+                        onValueChange = {
+                            password = it
+                            error = null
+                        },
                         label = { Text("Password") },
                         leadingIcon = { Icon(Icons.Default.Lock, null) },
                         visualTransformation = PasswordVisualTransformation(),
@@ -375,15 +496,44 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp)
                     )
+
+                    if (!createMode) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            TextButton(
+                                onClick = ::sendPasswordReset,
+                                enabled = !loading && !resettingPassword
+                            ) {
+                                if (resettingPassword) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(Modifier.width(7.dp))
+                                }
+                                Text("Forgot password?")
+                            }
+                        }
+                    }
                 }
 
                 error?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        it,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
                 info?.let {
-                    Spacer(Modifier.height(10.dp))
-                    Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        it,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        style = MaterialTheme.typography.bodySmall
+                    )
                 }
 
                 Spacer(Modifier.height(18.dp))
@@ -391,53 +541,82 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                     onClick = {
                         if (phoneMode) {
                             val id = verificationId
-                            if (id == null) sendOtp()
-                            else completePhoneCredential(PhoneAuthProvider.getCredential(id, otp))
+                            if (id == null) {
+                                sendOtp()
+                            } else {
+                                completePhoneCredential(PhoneAuthProvider.getCredential(id, otp))
+                            }
                         } else {
                             scope.launch {
                                 loading = true
                                 error = null
+                                info = null
                                 try {
                                     if (createMode) {
                                         require(displayName.trim().length >= 2) { "Enter your name" }
-                                        val result = auth.createUserWithEmailAndPassword(email, password).await()
+                                        val result = auth.createUserWithEmailAndPassword(
+                                            email.trim(),
+                                            password
+                                        ).await()
                                         val user = requireNotNull(result.user)
-                                        user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(displayName.trim()).build()).await()
+                                        user.updateProfile(
+                                            UserProfileChangeRequest.Builder()
+                                                .setDisplayName(displayName.trim())
+                                                .build()
+                                        ).await()
                                         persistSignedInUser(null)
                                     } else {
-                                        auth.signInWithEmailAndPassword(email, password).await()
+                                        auth.signInWithEmailAndPassword(email.trim(), password).await()
                                         persistSignedInUser(null)
                                     }
                                 } catch (t: Throwable) {
-                                    error = t.message ?: "Unable to continue"
+                                    error = if (createMode) {
+                                        t.message ?: "Could not create account"
+                                    } else {
+                                        emailAuthMessage(t)
+                                    }
                                 } finally {
                                     loading = false
                                 }
                             }
                         }
                     },
-                    enabled = !loading && if (phoneMode) {
+                    enabled = !loading && !resettingPassword && if (phoneMode) {
                         phone.isNotBlank() && (verificationId == null || otp.length == 6)
                     } else {
-                        email.isNotBlank() && password.length >= 6 && (!createMode || displayName.trim().length >= 2)
+                        email.isNotBlank() &&
+                            password.length >= 6 &&
+                            (!createMode || displayName.trim().length >= 2)
                     },
                     modifier = Modifier.fillMaxWidth().height(52.dp),
                     shape = RoundedCornerShape(16.dp)
                 ) {
-                    if (loading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                    else Text(
-                        if (phoneMode) {
-                            if (verificationId == null) "Send OTP" else "Verify & continue"
-                        } else if (createMode) {
-                            "Create account"
-                        } else {
-                            "Sign in"
-                        }
-                    )
+                    if (loading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(22.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            if (phoneMode) {
+                                if (verificationId == null) "Send OTP" else "Verify & continue"
+                            } else if (createMode) {
+                                "Create account"
+                            } else {
+                                "Sign in"
+                            }
+                        )
+                    }
                 }
 
                 if (phoneMode && verificationId != null) {
-                    TextButton(onClick = { verificationId = null; otp = ""; info = null }) {
+                    TextButton(
+                        onClick = {
+                            verificationId = null
+                            otp = ""
+                            info = null
+                        }
+                    ) {
                         Text("Change number")
                     }
                 }
