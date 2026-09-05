@@ -71,9 +71,10 @@ data class CallSession(
     val outgoing: Boolean = false
 )
 
+// Legacy HomeScreen still uses this enum. The v1.4 ReadyHomeScreen uses its own
+// four-position navigation state for Calls / Chats / People / Profile.
 enum class MainTab {
     Calls,
-    Chats,
     People,
     Profile
 }
