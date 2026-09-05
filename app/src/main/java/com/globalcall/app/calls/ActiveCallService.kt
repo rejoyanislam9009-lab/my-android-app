@@ -17,19 +17,29 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.globalcall.app.MainActivity
 import com.globalcall.app.data.GlobalCallRepository
+import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * Keeps an accepted GlobalCall voice/video call in foreground priority while the
- * activity is backgrounded. The WebRTC engine still lives in the app process,
- * but Android now treats that process as an active microphone/camera call instead
- * of an ordinary background activity.
+ * Foreground owner for a real GlobalCall voice/video call.
+ *
+ * The service is started only while a call is connecting/active. It keeps Android
+ * from treating the WebRTC process as an ordinary background app, maintains a
+ * lightweight call-state heartbeat, and closes stale state when the call document
+ * becomes terminal even if the Activity is minimized or recreated.
  */
 class ActiveCallService : Service() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var wakeLock: PowerManager.WakeLock? = null
+    private var heartbeatJob: Job? = null
+    private var statusRegistration: ListenerRegistration? = null
+    private var lastCallId: String = ""
+    private var stoppingNormally = false
 
     override fun onCreate() {
         super.onCreate()
@@ -49,7 +59,14 @@ class ActiveCallService : Service() {
         val callId = intent?.getStringExtra(EXTRA_CALL_ID).orEmpty()
 
         if (action == ACTION_STOP) {
+            stoppingNormally = true
+            heartbeatJob?.cancel()
+            heartbeatJob = null
+            statusRegistration?.remove()
+            statusRegistration = null
+            ActiveCallEngineStore.close(callId)
             clearState(callId)
+            serviceScope.launch { runCatching { GlobalCallRepository().clearMyCallState(callId) } }
             ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -60,12 +77,14 @@ class ActiveCallService : Service() {
             return START_NOT_STICKY
         }
 
+        stoppingNormally = false
+        lastCallId = callId
         val peerName = intent?.getStringExtra(EXTRA_PEER_NAME).orEmpty()
             .ifBlank { "GlobalCall contact" }
         val video = intent?.getBooleanExtra(EXTRA_VIDEO, false) == true
         val connected = intent?.getBooleanExtra(EXTRA_CONNECTED, false) == true
 
-        saveState(callId, peerName, video)
+        saveState(callId, peerName, video, connected)
         val notification = buildNotification(callId, peerName, video, connected)
         val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
@@ -78,16 +97,63 @@ class ActiveCallService : Service() {
             notification,
             serviceType
         )
-        return START_NOT_STICKY
+
+        watchCallStatus(callId)
+        if (connected) startHeartbeat(callId) else stopHeartbeat()
+        return START_REDELIVER_INTENT
     }
 
     override fun onDestroy() {
+        statusRegistration?.remove()
+        statusRegistration = null
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+
+        val callId = lastCallId
+        if (!stoppingNormally && callId.isNotBlank()) {
+            ActiveCallEngineStore.close(callId)
+            clearState(callId)
+            serviceScope.launch { runCatching { GlobalCallRepository().endCall(callId) } }
+        }
+
         if (wakeLock?.isHeld == true) runCatching { wakeLock?.release() }
         wakeLock = null
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun startHeartbeat(callId: String) {
+        if (heartbeatJob?.isActive == true) return
+        heartbeatJob = serviceScope.launch {
+            val repository = GlobalCallRepository()
+            while (true) {
+                runCatching { repository.setMyCallState("active", callId) }
+                delay(30_000L)
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+
+    private fun watchCallStatus(callId: String) {
+        statusRegistration?.remove()
+        statusRegistration = GlobalCallRepository().observeCallStatus(callId) { status ->
+            if (status !in TERMINAL_STATUSES) return@observeCallStatus
+            stoppingNormally = true
+            stopHeartbeat()
+            statusRegistration?.remove()
+            statusRegistration = null
+            ActiveCallEngineStore.close(callId)
+            clearState(callId)
+            serviceScope.launch { runCatching { GlobalCallRepository().clearMyCallState(callId) } }
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
+    }
 
     private fun buildNotification(
         callId: String,
@@ -156,11 +222,12 @@ class ActiveCallService : Service() {
         )
     }
 
-    private fun saveState(callId: String, peerName: String, video: Boolean) {
+    private fun saveState(callId: String, peerName: String, video: Boolean, connected: Boolean) {
         prefs(this).edit()
             .putString(KEY_CALL_ID, callId)
             .putString(KEY_PEER_NAME, peerName)
             .putBoolean(KEY_VIDEO, video)
+            .putBoolean(KEY_CONNECTED, connected)
             .apply()
     }
 
@@ -173,12 +240,13 @@ class ActiveCallService : Service() {
     }
 
     companion object {
-        private const val CHANNEL_ID = "globalcall_active_call_v1"
+        private const val CHANNEL_ID = "globalcall_active_call_v2"
         private const val ACTIVE_NOTIFICATION_ID = 0x47434C
         private const val PREFS = "globalcall_active_call_state"
         private const val KEY_CALL_ID = "call_id"
         private const val KEY_PEER_NAME = "peer_name"
         private const val KEY_VIDEO = "video"
+        private const val KEY_CONNECTED = "connected"
 
         const val EXTRA_CALL_ID = "active_call_id"
         private const val EXTRA_PEER_NAME = "active_peer_name"
@@ -187,6 +255,7 @@ class ActiveCallService : Service() {
         private const val ACTION_START = "com.globalcall.app.action.START_ACTIVE_CALL"
         private const val ACTION_UPDATE = "com.globalcall.app.action.UPDATE_ACTIVE_CALL"
         private const val ACTION_STOP = "com.globalcall.app.action.STOP_ACTIVE_CALL"
+        private val TERMINAL_STATUSES = setOf("ended", "declined", "busy", "missed")
 
         fun start(
             context: Context,
@@ -239,6 +308,9 @@ class ActiveCallService : Service() {
         fun activeCallId(context: Context): String =
             prefs(context).getString(KEY_CALL_ID, "").orEmpty()
 
+        fun isConnected(context: Context): Boolean =
+            prefs(context).getBoolean(KEY_CONNECTED, false)
+
         fun hasAnotherActiveCall(context: Context, incomingCallId: String): Boolean {
             val current = activeCallId(context)
             return current.isNotBlank() && current != incomingCallId
@@ -256,6 +328,7 @@ class ActiveCallActionReceiver : BroadcastReceiver() {
         if (callId.isBlank()) return
         val pending = goAsync()
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            ActiveCallEngineStore.close(callId)
             runCatching { GlobalCallRepository().endCall(callId) }
             ActiveCallService.stop(context, callId)
             NotificationManagerCompat.from(context).cancel(callId.hashCode())
