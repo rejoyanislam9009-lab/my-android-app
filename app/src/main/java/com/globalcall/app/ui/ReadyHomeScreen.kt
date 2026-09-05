@@ -3,6 +3,8 @@ package com.globalcall.app.ui
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import android.net.Uri
 import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -45,6 +47,7 @@ import com.globalcall.app.model.CallInvite
 import com.globalcall.app.model.CallRecord
 import com.globalcall.app.model.CallSession
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -171,7 +174,37 @@ fun ReadyHomeScreen(
         val peopleReg = repository.observePeople(onChange = { allUsers = it }, onError = { })
         val connectionReg = repository.observeConnectionUids(user.uid, onChange = { connectionUids = it }, onError = { })
         val callsReg = repository.observeCallHistory(user.uid, onChange = { calls = it }, onError = { })
-        val incomingReg = repository.observeIncomingCall(user.uid, onChange = { incoming = it }, onError = { })
+
+        // The rules authorize call reads by participantUids. Query by that same field,
+        // then filter the receiver/status locally. This avoids Firestore query/rule mismatch.
+        val incomingReg = FirebaseFirestore.getInstance()
+            .collection("calls")
+            .whereArrayContains("participantUids", user.uid)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    incoming = null
+                    return@addSnapshotListener
+                }
+                val doc = snapshot?.documents.orEmpty()
+                    .filter {
+                        it.getString("calleeUid") == user.uid &&
+                            it.getString("status") == "ringing"
+                    }
+                    .maxByOrNull { it.getTimestamp("createdAt")?.seconds ?: 0L }
+                incoming = doc?.let {
+                    CallInvite(
+                        id = it.id,
+                        callerUid = it.getString("callerUid").orEmpty(),
+                        callerName = it.getString("callerName").orEmpty(),
+                        calleeUid = it.getString("calleeUid").orEmpty(),
+                        calleeName = it.getString("calleeName").orEmpty(),
+                        status = it.getString("status").orEmpty(),
+                        video = it.getBoolean("video") ?: true,
+                        roomName = it.getString("roomName").orEmpty()
+                    )
+                }
+            }
+
         onDispose {
             myProfileReg.remove()
             peopleReg.remove()
@@ -202,7 +235,7 @@ fun ReadyHomeScreen(
             runCatching { repository.loadInvite(request.callId) }.getOrNull()?.let { invite ->
                 runCatching { repository.acceptCall(invite) }
                     .onSuccess(onJoinCall)
-                    .onFailure { message = it.message }
+                    .onFailure { message = "Could not answer this call" }
             }
         }
         onExternalCallHandled()
@@ -212,9 +245,26 @@ fun ReadyHomeScreen(
         if (busy) return
         scope.launch {
             busy = true
+
+            // Clean up an older unfinished outgoing ring to this same contact before
+            // starting a fresh call. This prevents stacked "Ringing" records.
+            calls.filter {
+                it.status == "ringing" &&
+                    it.isOutgoing(user.uid) &&
+                    it.peerUid(user.uid) == peer.uid
+            }.forEach { oldCall ->
+                runCatching { repository.endCall(oldCall.id) }
+            }
+
             runCatching { repository.startCall(peer, video) }
                 .onSuccess(onJoinCall)
-                .onFailure { message = it.message ?: "Could not start call" }
+                .onFailure {
+                    message = when {
+                        it.message?.contains("offline", ignoreCase = true) == true -> "This contact is offline right now"
+                        it.message?.contains("permission", ignoreCase = true) == true -> "Call access is syncing. Please try again in a moment."
+                        else -> it.message ?: "Could not start call"
+                    }
+                }
             busy = false
         }
     }
@@ -274,7 +324,7 @@ fun ReadyHomeScreen(
                     scope.launch {
                         runCatching { repository.acceptCall(invite) }
                             .onSuccess { incoming = null; onJoinCall(it) }
-                            .onFailure { message = it.message ?: "Could not answer call" }
+                            .onFailure { message = "Could not answer this call" }
                     }
                 },
                 onDecline = {
@@ -338,6 +388,14 @@ private fun CallsTab(
     onDirectCall: (AppUser, Boolean) -> Unit
 ) {
     val onlinePeople = remember(people) { people.filter { it.online } }
+    val recentCalls = remember(calls, currentUid) {
+        // History stays in Firestore, but the home screen shows only the latest
+        // finished call per contact. Temporary "ringing" rows no longer stack up.
+        calls.filter { it.status != "ringing" }
+            .distinctBy { it.peerUid(currentUid) }
+            .take(30)
+    }
+
     LazyColumn(
         Modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp),
@@ -354,7 +412,7 @@ private fun CallsTab(
                     Text("Connect once with a GlobalCall ID, then call again whenever they are online.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .8f))
                     Spacer(Modifier.height(16.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
                         Spacer(Modifier.width(8.dp))
                         Text("Voice & video use the same secure call session", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
@@ -378,13 +436,12 @@ private fun CallsTab(
         }
 
         item { Text("Recent calls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
-        if (calls.isEmpty()) {
-            item { EmptyCard(Icons.Default.History, "No calls yet", "Connect someone with their GlobalCall ID, then start a real voice or video call.") }
+        if (recentCalls.isEmpty()) {
+            item { EmptyCard(Icons.Default.History, "No completed calls yet", "Connect someone with their GlobalCall ID, then start a real voice or video call.") }
         } else {
-            items(calls.take(30), key = { it.id }) { call ->
+            items(recentCalls, key = { it.id }) { call ->
                 val peer = people.firstOrNull { it.uid == call.peerUid(currentUid) }
                 val stateText = when (call.status) {
-                    "ringing" -> "Ringing"
                     "declined" -> "Declined"
                     "accepted" -> "Connected"
                     "ended" -> "Completed"
@@ -774,10 +831,27 @@ private fun IncomingOverlay(
     onAnswer: () -> Unit,
     onDecline: () -> Unit
 ) {
+    val context = LocalContext.current
+
+    DisposableEffect(invite.id) {
+        val player = runCatching {
+            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            MediaPlayer.create(context, uri)?.apply {
+                isLooping = true
+                start()
+            }
+        }.getOrNull()
+        onDispose {
+            runCatching { player?.stop() }
+            runCatching { player?.release() }
+        }
+    }
+
     LaunchedEffect(invite.id) {
         delay(45_000)
         onDecline()
     }
+
     Surface(Modifier.fillMaxSize(), color = Color(0xF20A0D13)) {
         Column(
             Modifier.fillMaxSize().padding(32.dp),
