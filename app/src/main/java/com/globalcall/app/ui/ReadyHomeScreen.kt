@@ -43,6 +43,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.globalcall.app.ChatActivity
 import com.globalcall.app.ExternalCallRequest
 import com.globalcall.app.MainActivity
+import com.globalcall.app.data.ChatRepository
+import com.globalcall.app.data.ConversationState
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.model.AppUser
 import com.globalcall.app.model.CallInvite
@@ -55,6 +57,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private suspend fun encodeProfilePhoto(context: Context, uri: Uri): String = withContext(Dispatchers.IO) {
     val resolver = context.contentResolver
@@ -150,11 +155,13 @@ fun ReadyHomeScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val chatRepository = remember(auth) { ChatRepository(auth = auth) }
     var tab by remember { mutableIntStateOf(0) }
     var allUsers by remember { mutableStateOf<List<AppUser>>(emptyList()) }
     var myProfile by remember { mutableStateOf<AppUser?>(null) }
     var connectionUids by remember { mutableStateOf<Set<String>>(emptySet()) }
     var calls by remember { mutableStateOf<List<CallRecord>>(emptyList()) }
+    var conversations by remember { mutableStateOf<List<ConversationState>>(emptyList()) }
     var incoming by remember { mutableStateOf<CallInvite?>(null) }
     var myCallCode by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
@@ -164,6 +171,7 @@ fun ReadyHomeScreen(
         allUsers.filter { it.uid in connectionUids }
             .sortedWith(compareByDescending<AppUser> { it.online }.thenBy { it.displayName.lowercase() })
     }
+    val unreadChats = remember(conversations, user.uid) { conversations.count { it.isUnread(user.uid) } }
 
     fun openChat(peer: AppUser) {
         context.startActivity(
@@ -186,6 +194,7 @@ fun ReadyHomeScreen(
         val peopleReg = repository.observePeople(onChange = { allUsers = it }, onError = { })
         val connectionReg = repository.observeConnectionUids(user.uid, onChange = { connectionUids = it }, onError = { })
         val callsReg = repository.observeCallHistory(user.uid, onChange = { calls = it }, onError = { })
+        val chatReg = chatRepository.observeConversations(onChange = { conversations = it }, onError = { })
 
         val incomingReg = FirebaseFirestore.getInstance()
             .collection("calls")
@@ -220,13 +229,11 @@ fun ReadyHomeScreen(
             peopleReg.remove()
             connectionReg.remove()
             callsReg.remove()
+            chatReg.remove()
             incomingReg.remove()
         }
     }
 
-    // Do not mark the account offline merely because the Activity went to the
-    // background. Signed-in users remain reachable by FCM; sign-out explicitly
-    // sets offline. This avoids the old immediate-offline behavior on Home/lock.
     DisposableEffect(lifecycleOwner, user.uid) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_START) {
@@ -246,7 +253,7 @@ fun ReadyHomeScreen(
             runCatching { repository.loadInvite(request.callId) }.getOrNull()?.let { invite ->
                 runCatching { repository.acceptCall(invite) }
                     .onSuccess(onJoinCall)
-                    .onFailure { message = "Could not answer this call" }
+                    .onFailure { message = it.message ?: "Could not answer this call" }
             }
         }
         onExternalCallHandled()
@@ -269,6 +276,7 @@ fun ReadyHomeScreen(
                 .onFailure {
                     message = when {
                         it.message?.contains("offline", ignoreCase = true) == true -> "This contact is offline right now"
+                        it.message?.contains("another call", ignoreCase = true) == true -> it.message
                         it.message?.contains("permission", ignoreCase = true) == true -> "Call access is syncing. Please try again in a moment."
                         else -> it.message ?: "Could not start call"
                     }
@@ -287,10 +295,12 @@ fun ReadyHomeScreen(
                         ?: user.phoneNumber
                         ?: user.email.orEmpty(),
                     onlineCount = people.count { it.online },
-                    onSearch = { tab = 1 }
+                    onSearch = { tab = 2 },
+                    onChats = { tab = 1 },
+                    unreadChats = unreadChats
                 )
             },
-            bottomBar = { GlobalCallBottomBar(tab) { tab = it } }
+            bottomBar = { GlobalCallBottomBar(tab, unreadChats) { tab = it } }
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
@@ -302,7 +312,13 @@ fun ReadyHomeScreen(
                         onDirectCall = ::directCall,
                         onMessage = ::openChat
                     )
-                    1 -> PeopleTab(
+                    1 -> ChatsTab(
+                        conversations = conversations,
+                        people = people,
+                        currentUid = user.uid,
+                        onMessage = ::openChat
+                    )
+                    2 -> PeopleTab(
                         people = people,
                         busy = busy,
                         repository = repository,
@@ -334,7 +350,7 @@ fun ReadyHomeScreen(
                     scope.launch {
                         runCatching { repository.acceptCall(invite) }
                             .onSuccess { incoming = null; onJoinCall(it) }
-                            .onFailure { message = "Could not answer this call" }
+                            .onFailure { message = it.message ?: "Could not answer this call" }
                     }
                 },
                 onDecline = {
@@ -347,13 +363,19 @@ fun ReadyHomeScreen(
 }
 
 @Composable
-private fun GlobalCallTopBar(name: String, onlineCount: Int, onSearch: () -> Unit) {
+private fun GlobalCallTopBar(
+    name: String,
+    onlineCount: Int,
+    onSearch: () -> Unit,
+    onChats: () -> Unit,
+    unreadChats: Int
+) {
     Surface(
         color = MaterialTheme.colorScheme.background.copy(alpha = .98f),
         contentColor = MaterialTheme.colorScheme.onSurface
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
@@ -375,17 +397,34 @@ private fun GlobalCallTopBar(name: String, onlineCount: Int, onSearch: () -> Uni
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            IconButton(onClick = onChats) {
+                BadgedBox(
+                    badge = {
+                        if (unreadChats > 0) Badge { Text(unreadChats.coerceAtMost(99).toString()) }
+                    }
+                ) { Icon(Icons.Default.Chat, "Chats") }
+            }
             FilledIconButton(onClick = onSearch) { Icon(Icons.Default.PersonAdd, "Connect people") }
         }
     }
 }
 
 @Composable
-private fun GlobalCallBottomBar(selected: Int, onSelected: (Int) -> Unit) {
+private fun GlobalCallBottomBar(selected: Int, unreadChats: Int, onSelected: (Int) -> Unit) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
         NavigationBarItem(selected == 0, { onSelected(0) }, { Icon(Icons.Default.PhoneInTalk, null) }, label = { Text("Calls") })
-        NavigationBarItem(selected == 1, { onSelected(1) }, { Icon(Icons.Default.Groups, null) }, label = { Text("People") })
-        NavigationBarItem(selected == 2, { onSelected(2) }, { Icon(Icons.Default.AccountCircle, null) }, label = { Text("Profile") })
+        NavigationBarItem(
+            selected == 1,
+            { onSelected(1) },
+            {
+                BadgedBox(
+                    badge = { if (unreadChats > 0) Badge { Text(unreadChats.coerceAtMost(99).toString()) } }
+                ) { Icon(Icons.Default.Chat, null) }
+            },
+            label = { Text("Chats") }
+        )
+        NavigationBarItem(selected == 2, { onSelected(2) }, { Icon(Icons.Default.Groups, null) }, label = { Text("People") })
+        NavigationBarItem(selected == 3, { onSelected(3) }, { Icon(Icons.Default.AccountCircle, null) }, label = { Text("Profile") })
     }
 }
 
@@ -432,12 +471,13 @@ private fun CallsTab(
         if (onlinePeople.isNotEmpty()) {
             item { Text("Online now", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
             items(onlinePeople, key = { "online-${it.uid}" }) { person ->
+                val onAnotherCall = person.callState in setOf("active", "calling", "ringing")
                 ContactRow(
                     title = person.displayName.ifBlank { "GlobalCall user" },
-                    subtitle = "Online • ${person.callCode.ifBlank { "Connected" }}",
+                    subtitle = if (onAnotherCall) "On another call" else "Online • ${person.callCode.ifBlank { "Connected" }}",
                     photoData = person.photoData,
                     online = true,
-                    enabled = !busy,
+                    enabled = !busy && !onAnotherCall,
                     onMessage = { onMessage(person) },
                     onVoice = { onDirectCall(person, false) },
                     onVideo = { onDirectCall(person, true) }
@@ -451,22 +491,110 @@ private fun CallsTab(
         } else {
             items(recentCalls, key = { it.id }) { call ->
                 val peer = people.firstOrNull { it.uid == call.peerUid(currentUid) }
-                val stateText = when (call.status) {
-                    "declined" -> "Declined"
-                    "accepted" -> "Connected"
-                    "ended" -> "Completed"
-                    else -> call.status.replaceFirstChar { it.uppercase() }
+                val duration = call.durationSeconds()?.let(::formatCallDuration)
+                val stateText = buildString {
+                    append(call.outcomeFor(currentUid))
+                    if (duration != null) append(" • $duration")
                 }
+                val onAnotherCall = peer?.callState in setOf("active", "calling", "ringing")
                 ContactRow(
                     title = call.peerName(currentUid).ifBlank { peer?.displayName ?: "GlobalCall user" },
-                    subtitle = if (peer?.online == true) "$stateText • Online" else "$stateText • Offline",
+                    subtitle = when {
+                        onAnotherCall -> "$stateText • Busy"
+                        peer?.online == true -> "$stateText • Online"
+                        else -> "$stateText • Offline"
+                    },
                     photoData = peer?.photoData.orEmpty(),
                     online = peer?.online == true,
-                    enabled = peer?.online == true && !busy,
+                    enabled = peer?.online == true && !busy && !onAnotherCall,
                     onMessage = peer?.let { { onMessage(it) } },
                     onVoice = { peer?.let { onDirectCall(it, false) } },
                     onVideo = { peer?.let { onDirectCall(it, true) } }
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChatsTab(
+    conversations: List<ConversationState>,
+    people: List<AppUser>,
+    currentUid: String,
+    onMessage: (AppUser) -> Unit
+) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(18.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        item {
+            Column(Modifier.padding(bottom = 4.dp)) {
+                Text("Messages", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                Text("Private conversations with your GlobalCall contacts", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        if (conversations.isEmpty()) {
+            item { EmptyCard(Icons.Default.ChatBubbleOutline, "No conversations yet", "Open a contact and send your first GlobalCall message.") }
+        } else {
+            items(conversations, key = { it.id }) { conversation ->
+                val peerUid = conversation.peerUid(currentUid)
+                val peer = people.firstOrNull { it.uid == peerUid }
+                    ?: AppUser(uid = peerUid, displayName = "GlobalCall contact")
+                ElevatedCard(
+                    onClick = { if (peer.uid.isNotBlank()) onMessage(peer) },
+                    shape = RoundedCornerShape(22.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box {
+                            AvatarImage(peer.photoData, peer.displayName, 54.dp)
+                            if (peer.online) {
+                                Box(
+                                    Modifier.align(Alignment.BottomEnd).size(13.dp).clip(CircleShape)
+                                        .background(Color(0xFF35D39A))
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    peer.displayName.ifBlank { "GlobalCall contact" },
+                                    modifier = Modifier.weight(1f),
+                                    fontWeight = if (conversation.isUnread(currentUid)) FontWeight.ExtraBold else FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                conversation.updatedAt?.let {
+                                    Text(
+                                        formatChatTime(it.toDate()),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(3.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    conversation.lastMessage.ifBlank { "New conversation" },
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (conversation.isUnread(currentUid)) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = if (conversation.isUnread(currentUid)) FontWeight.Bold else FontWeight.Normal
+                                )
+                                if (conversation.isUnread(currentUid)) {
+                                    Spacer(Modifier.width(8.dp))
+                                    Badge { Text("1") }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -637,12 +765,17 @@ private fun PeopleTab(
             item { EmptyCard(Icons.Default.Groups, "No contacts yet", "Ask another GlobalCall user for the ID shown on their Profile screen.") }
         } else {
             items(filtered, key = { it.uid }) { person ->
+                val onAnotherCall = person.callState in setOf("active", "calling", "ringing")
                 ContactRow(
                     title = person.displayName.ifBlank { "GlobalCall user" },
-                    subtitle = if (person.online) "Online • ${person.callCode.ifBlank { "Connected" }}" else "Offline • ${person.callCode.ifBlank { "Connected" }}",
+                    subtitle = when {
+                        onAnotherCall -> "On another call • ${person.callCode.ifBlank { "Connected" }}"
+                        person.online -> "Online • ${person.callCode.ifBlank { "Connected" }}"
+                        else -> "Offline • ${person.callCode.ifBlank { "Connected" }}"
+                    },
                     photoData = person.photoData,
                     online = person.online,
-                    enabled = person.online && !busy,
+                    enabled = person.online && !busy && !onAnotherCall,
                     onMessage = { onMessage(person) },
                     onVoice = { onDirectCall(person, false) },
                     onVideo = { onDirectCall(person, true) }
@@ -891,5 +1024,20 @@ private fun IncomingOverlay(
                 }
             }
         }
+    }
+}
+
+private fun formatCallDuration(seconds: Long): String = when {
+    seconds < 60 -> "${seconds}s"
+    seconds < 3600 -> "%d:%02d".format(seconds / 60, seconds % 60)
+    else -> "%d:%02d:%02d".format(seconds / 3600, (seconds % 3600) / 60, seconds % 60)
+}
+
+private fun formatChatTime(date: Date): String {
+    val diff = System.currentTimeMillis() - date.time
+    return if (diff < 24 * 60 * 60_000L) {
+        SimpleDateFormat("h:mm a", Locale.getDefault()).format(date)
+    } else {
+        SimpleDateFormat("MMM d", Locale.getDefault()).format(date)
     }
 }
