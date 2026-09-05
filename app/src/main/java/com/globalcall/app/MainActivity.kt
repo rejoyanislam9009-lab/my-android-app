@@ -25,6 +25,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import com.globalcall.app.calls.CallStateHealth
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.data.UserDiscoveryRepository
 import com.globalcall.app.model.CallSession
@@ -40,6 +42,7 @@ import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -48,6 +51,11 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         readCallIntent(intent)
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { CallStateHealth.repair(applicationContext) }
+        }
+
         setContent {
             GlobalCallTheme {
                 GlobalCallApp(
@@ -62,6 +70,9 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         readCallIntent(intent)
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { CallStateHealth.repair(applicationContext) }
+        }
     }
 
     private fun readCallIntent(intent: Intent?) {
