@@ -29,6 +29,7 @@ android {
         buildConfigField("String", "MEETING_BASE_URL", "\"https://meet.jit.si\"")
     }
 
+    // Stable beta signing keeps future GlobalCall APKs on the same update chain.
     val betaKeystorePath = System.getenv("GLOBALCALL_BETA_KEYSTORE")
     val betaSigning = if (!betaKeystorePath.isNullOrBlank()) {
         signingConfigs.create("globalCallBeta") {
