@@ -8,9 +8,9 @@ import com.globalcall.app.model.CallSession
  * Process-level owner for the active WebRTC engine.
  *
  * The call UI may be recreated when GlobalCall is minimized/restored. Keeping the
- * media engine here prevents a Compose/Activity disposal from tearing down an
- * otherwise active microphone/camera call. ActiveCallService keeps the process in
- * foreground priority while this engine is alive.
+ * media engine and its CallSession here prevents a Compose/Activity disposal from
+ * tearing down an otherwise active microphone/camera call. ActiveCallService keeps
+ * the process in foreground priority while this engine is alive.
  */
 object ActiveCallEngineStore {
     data class Snapshot(
@@ -23,6 +23,7 @@ object ActiveCallEngineStore {
 
     private val lock = Any()
     private var engine: WebRtcCallEngine? = null
+    private var activeSession: CallSession? = null
     private var engineCallId: String = ""
 
     @Volatile private var state: String = "Preparing secure media…"
@@ -31,10 +32,14 @@ object ActiveCallEngineStore {
     @Volatile private var error: String? = null
 
     fun obtain(context: Context, session: CallSession, uid: String): WebRtcCallEngine = synchronized(lock) {
-        if (engine != null && engineCallId == session.callId) return@synchronized engine!!
+        if (engine != null && engineCallId == session.callId) {
+            activeSession = session
+            return@synchronized engine!!
+        }
 
         closeLocked()
         engineCallId = session.callId
+        activeSession = session
         state = "Preparing secure media…"
         connected = false
         connectedAtMs = 0L
@@ -70,6 +75,10 @@ object ActiveCallEngineStore {
         engine?.takeIf { engineCallId == callId }
     }
 
+    fun session(): CallSession? = synchronized(lock) {
+        activeSession?.takeIf { engine != null && it.callId == engineCallId }
+    }
+
     fun activeCallId(): String = synchronized(lock) {
         if (engine == null) "" else engineCallId
     }
@@ -96,6 +105,7 @@ object ActiveCallEngineStore {
     private fun closeLocked() {
         runCatching { engine?.close() }
         engine = null
+        activeSession = null
         engineCallId = ""
         state = "Preparing secure media…"
         connected = false
