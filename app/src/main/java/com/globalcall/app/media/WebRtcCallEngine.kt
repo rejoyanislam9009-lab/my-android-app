@@ -93,13 +93,20 @@ class WebRtcCallEngine(
 
     private val audioDeviceCallback = object : AudioDeviceCallback() {
         override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
-            if (!userForcedSpeaker && hasBluetoothOutput()) routeToBluetooth()
+            if (userForcedSpeaker) return
+            when {
+                hasWiredOutput() -> routeToWired()
+                hasBluetoothOutput() -> routeToBluetooth()
+            }
         }
 
         override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
-            if (audioRoute == "bluetooth" && !hasBluetoothOutput()) {
-                applyDefaultRoute()
+            val routeGone = when (audioRoute) {
+                "bluetooth" -> !hasBluetoothOutput()
+                "wired" -> !hasWiredOutput()
+                else -> false
             }
+            if (routeGone) applyDefaultRoute()
         }
     }
 
@@ -191,28 +198,64 @@ class WebRtcCallEngine(
         })
     }
 
-    fun setSpeakerEnabled(enabled: Boolean): String {
-        userForcedSpeaker = enabled
-        return if (enabled) routeToSpeaker() else {
-            if (hasBluetoothOutput()) routeToBluetooth() else routeToEarpiece()
+    fun currentAudioRoute(): String = audioRoute
+
+    fun availableAudioRoutes(): List<String> = buildList {
+        if (hasEarpiece()) add("earpiece")
+        add("speaker")
+        if (hasBluetoothOutput()) add("bluetooth")
+        if (hasWiredOutput()) add("wired")
+    }.distinct()
+
+    fun selectAudioRoute(route: String): String {
+        userForcedSpeaker = route == "speaker"
+        return when (route) {
+            "speaker" -> routeToSpeaker()
+            "bluetooth" -> if (hasBluetoothOutput()) routeToBluetooth() else applyDefaultRoute()
+            "wired" -> if (hasWiredOutput()) routeToWired() else applyDefaultRoute()
+            else -> routeToEarpiece()
         }
     }
 
-    fun currentAudioRoute(): String = audioRoute
+    fun setSpeakerEnabled(enabled: Boolean): String {
+        return if (enabled) selectAudioRoute("speaker") else {
+            userForcedSpeaker = false
+            applyDefaultRoute()
+        }
+    }
 
     private fun configureAudioRoute() {
         runCatching { audioManager.mode = AudioManager.MODE_IN_COMMUNICATION }
         userForcedSpeaker = false
-        if (hasBluetoothOutput()) routeToBluetooth() else applyDefaultRoute()
+        applyDefaultRoute()
     }
 
-    private fun applyDefaultRoute(): String = if (video) routeToSpeaker() else routeToEarpiece()
+    private fun applyDefaultRoute(): String = when {
+        hasWiredOutput() -> routeToWired()
+        hasBluetoothOutput() -> routeToBluetooth()
+        video -> routeToSpeaker()
+        else -> routeToEarpiece()
+    }
+
+    private fun hasEarpiece(): Boolean = runCatching {
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+            it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+        }
+    }.getOrDefault(true)
 
     private fun hasBluetoothOutput(): Boolean = runCatching {
         audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
             it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
                 it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
                 (Build.VERSION.SDK_INT >= 31 && it.type == AudioDeviceInfo.TYPE_BLE_HEADSET)
+        }
+    }.getOrDefault(false)
+
+    private fun hasWiredOutput(): Boolean = runCatching {
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {
+            it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                it.type == AudioDeviceInfo.TYPE_USB_HEADSET
         }
     }.getOrDefault(false)
 
@@ -232,7 +275,33 @@ class WebRtcCallEngine(
                 true
             }
         }.getOrDefault(false)
-        audioRoute = if (routed) "bluetooth" else if (video) routeToSpeaker() else routeToEarpiece()
+        audioRoute = if (routed) "bluetooth" else when {
+            hasWiredOutput() -> routeToWired()
+            video -> routeToSpeaker()
+            else -> routeToEarpiece()
+        }
+        return audioRoute
+    }
+
+    private fun routeToWired(): String {
+        val routed = runCatching {
+            audioManager.isSpeakerphoneOn = false
+            if (Build.VERSION.SDK_INT >= 31) {
+                val device = audioManager.availableCommunicationDevices.firstOrNull {
+                    it.type == AudioDeviceInfo.TYPE_WIRED_HEADSET ||
+                        it.type == AudioDeviceInfo.TYPE_WIRED_HEADPHONES ||
+                        it.type == AudioDeviceInfo.TYPE_USB_HEADSET
+                }
+                device != null && audioManager.setCommunicationDevice(device)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.stopBluetoothSco()
+                @Suppress("DEPRECATION")
+                run { audioManager.isBluetoothScoOn = false }
+                true
+            }
+        }.getOrDefault(false)
+        audioRoute = if (routed && hasWiredOutput()) "wired" else if (video) routeToSpeaker() else routeToEarpiece()
         return audioRoute
     }
 
