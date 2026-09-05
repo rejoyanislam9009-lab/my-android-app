@@ -18,8 +18,8 @@ android {
         applicationId = "com.globalcall.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.9.0"
+        versionCode = 10
+        versionName = "0.10.0"
 
         buildConfigField("String", "FIREBASE_API_KEY", "\"AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"guide-c4c2c\"")
@@ -29,7 +29,16 @@ android {
         buildConfigField("String", "MEETING_BASE_URL", "\"https://meet.jit.si\"")
     }
 
-    // Stable beta signing keeps future GlobalCall APKs on the same update chain.
+    // Produce smaller device-specific APKs while keeping a universal fallback.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = true
+        }
+    }
+
     val betaKeystorePath = System.getenv("GLOBALCALL_BETA_KEYSTORE")
     val betaSigning = if (!betaKeystorePath.isNullOrBlank()) {
         signingConfigs.create("globalCallBeta") {
@@ -59,6 +68,8 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
         resources.excludes += "META-INF/DEPENDENCIES"
+        resources.excludes += "META-INF/NOTICE*"
+        resources.excludes += "META-INF/LICENSE*"
     }
 }
 
