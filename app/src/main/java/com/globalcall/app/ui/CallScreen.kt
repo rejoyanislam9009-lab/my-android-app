@@ -1,13 +1,12 @@
 package com.globalcall.app.ui
 
 import android.Manifest
-import android.content.BroadcastReceiver
+import android.app.Activity
 import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -17,44 +16,49 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
-import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.globalcall.app.data.GlobalCallRepository
+import com.globalcall.app.media.WebRtcCallEngine
 import com.globalcall.app.model.CallSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.jitsi.meet.sdk.BroadcastEvent
-import org.jitsi.meet.sdk.JitsiMeetActivity
-import org.jitsi.meet.sdk.JitsiMeetConferenceOptions
-import java.net.URL
+import org.webrtc.SurfaceViewRenderer
 
 @Composable
-fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish: (Boolean) -> Unit) {
+fun CallScreen(
+    session: CallSession,
+    repository: GlobalCallRepository?,
+    onFinish: (Boolean) -> Unit
+) {
     val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
+    val activity = context as? Activity
     val instant = session.callId.startsWith("instant-") || repository == null
-    val roomCode = remember(session.token) { session.token.removePrefix("GlobalCall-") }
-    var launched by remember(session.callId) { mutableStateOf(false) }
-    var joined by remember(session.callId) { mutableStateOf(false) }
+
     var callStatus by remember(session.callId) {
         mutableStateOf(if (instant || !session.outgoing) "accepted" else "ringing")
     }
-    var launchError by remember(session.callId) { mutableStateOf<String?>(null) }
+    var mediaState by remember(session.callId) { mutableStateOf("Preparing secure media…") }
+    var mediaError by remember(session.callId) { mutableStateOf<String?>(null) }
+    var connected by remember(session.callId) { mutableStateOf(false) }
+    var elapsedSeconds by remember(session.callId) { mutableIntStateOf(0) }
     var finished by remember(session.callId) { mutableStateOf(false) }
+    var engine by remember(session.callId) { mutableStateOf<WebRtcCallEngine?>(null) }
+
     var permissionsGranted by remember(session.callId) {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED &&
@@ -65,17 +69,35 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
     fun finish(updateServer: Boolean) {
         if (!finished) {
             finished = true
+            engine?.close()
+            engine = null
             onFinish(updateServer)
         }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+    DisposableEffect(activity, session.callId) {
+        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            engine?.close()
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
         val mic = result[Manifest.permission.RECORD_AUDIO]
             ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
         val camera = !session.video || (result[Manifest.permission.CAMERA]
             ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED))
         permissionsGranted = mic && camera
-        if (!permissionsGranted) launchError = "Camera and microphone permission are required for this call."
+        if (!permissionsGranted) {
+            mediaError = if (session.video) {
+                "Camera and microphone permission are required for a video call."
+            } else {
+                "Microphone permission is required for a voice call."
+            }
+        }
     }
 
     DisposableEffect(session.callId, repository) {
@@ -90,77 +112,25 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
         }
     }
 
-    // Give the caller audible feedback while the remote user is actually ringing.
-    // The player is disposed immediately when the call is accepted, declined or cancelled.
     DisposableEffect(session.callId, callStatus, session.outgoing) {
-        val ringback = if (!instant && session.outgoing && callStatus == "ringing" && !finished) {
+        val ringback: MediaPlayer? = if (!instant && session.outgoing && callStatus == "ringing" && !finished) {
             runCatching {
-                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-                MediaPlayer.create(context, uri)?.apply {
+                MediaPlayer.create(context, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))?.apply {
                     isLooping = true
-                    setVolume(0.28f, 0.28f)
+                    setVolume(0.22f, 0.22f)
                     start()
                 }
             }.getOrNull()
         } else null
-
         onDispose {
             runCatching { ringback?.stop() }
             runCatching { ringback?.release() }
         }
     }
 
-    DisposableEffect(session.callId) {
-        val filter = IntentFilter().apply {
-            addAction(BroadcastEvent.Type.CONFERENCE_WILL_JOIN.action)
-            addAction(BroadcastEvent.Type.CONFERENCE_JOINED.action)
-            addAction(BroadcastEvent.Type.CONFERENCE_TERMINATED.action)
-            addAction(BroadcastEvent.Type.READY_TO_CLOSE.action)
-        }
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(receiverContext: Context?, intent: Intent?) {
-                if (intent == null) return
-                when (BroadcastEvent(intent).type) {
-                    BroadcastEvent.Type.CONFERENCE_JOINED -> joined = true
-                    BroadcastEvent.Type.CONFERENCE_TERMINATED, BroadcastEvent.Type.READY_TO_CLOSE -> finish(true)
-                    else -> Unit
-                }
-            }
-        }
-        val manager = LocalBroadcastManager.getInstance(context)
-        manager.registerReceiver(receiver, filter)
-        onDispose { manager.unregisterReceiver(receiver) }
-    }
-
-    fun launchNativeConference() {
-        if (launched || finished || !permissionsGranted) return
-        if (!instant && session.outgoing && callStatus != "accepted") return
-        runCatching {
-            val options = JitsiMeetConferenceOptions.Builder()
-                .setServerURL(URL(session.serverUrl))
-                .setRoom(session.token)
-                .setAudioMuted(false)
-                .setVideoMuted(false)
-                .setAudioOnly(!session.video)
-                .setFeatureFlag("prejoinpage.enabled", false)
-                .setFeatureFlag("welcomepage.enabled", false)
-                .setFeatureFlag("pip.enabled", true)
-                .setFeatureFlag("invite.enabled", false)
-                .setFeatureFlag("calendar.enabled", false)
-                .setFeatureFlag("recording.enabled", false)
-                .setFeatureFlag("live-streaming.enabled", false)
-                .setFeatureFlag("video-mute.enabled", true)
-                .setFeatureFlag("camera-facing-mode", "user")
-                .build()
-            launched = true
-            JitsiMeetActivity.launch(context, options)
-        }.onFailure {
-            launched = false
-            launchError = it.message ?: "Unable to start secure call"
-        }
-    }
-
     LaunchedEffect(session.callId, permissionsGranted, callStatus) {
+        if (instant) return@LaunchedEffect
+
         if (!permissionsGranted) {
             permissionLauncher.launch(
                 buildList {
@@ -168,105 +138,254 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
                     if (session.video) add(Manifest.permission.CAMERA)
                 }.toTypedArray()
             )
-        } else if (instant || !session.outgoing || callStatus == "accepted") {
-            launchNativeConference()
+            return@LaunchedEffect
+        }
+
+        if (callStatus == "accepted" && engine == null && repository != null) {
+            val uid = repository.currentUid
+            if (uid.isNullOrBlank()) {
+                mediaError = "Your account session expired. Sign in again."
+                return@LaunchedEffect
+            }
+
+            mediaError = null
+            engine = WebRtcCallEngine(
+                context = context,
+                callId = session.callId,
+                uid = uid,
+                outgoing = session.outgoing,
+                video = session.video,
+                onState = { mediaState = it },
+                onConnected = { connected = true; mediaState = "Connected" },
+                onError = { mediaError = it; mediaState = "Media connection failed" }
+            ).also { it.start() }
         }
     }
 
     LaunchedEffect(session.callId, callStatus) {
         if (!instant && session.outgoing && callStatus == "ringing" && repository != null) {
             delay(45_000)
-            runCatching { repository.endCall(session.callId) }
-            finish(false)
+            if (callStatus == "ringing" && !finished) {
+                runCatching { repository.endCall(session.callId) }
+                finish(false)
+            }
         }
     }
 
-    val heading = when {
-        joined -> if (session.video) "Video call connected" else "Voice call connected"
-        !permissionsGranted -> "Permission required"
-        !instant && session.outgoing && callStatus == "ringing" -> "Calling ${session.peerName.ifBlank { "contact" }}…"
-        callStatus == "accepted" -> "Connecting secure call…"
-        else -> "Starting secure call…"
+    LaunchedEffect(connected) {
+        if (!connected) return@LaunchedEffect
+        elapsedSeconds = 0
+        while (connected && !finished) {
+            delay(1_000)
+            elapsedSeconds++
+        }
     }
 
-    val subheading = when {
-        !instant && session.outgoing && callStatus == "ringing" -> "Ringing • waiting for answer"
-        !instant && callStatus == "accepted" && !joined -> "Answered • opening secure media"
-        instant -> "Private room $roomCode"
-        else -> session.peerName.ifBlank { "GlobalCall contact" }
+    if (instant) {
+        UnsupportedInstantCallScreen(onFinish = { finish(false) })
+        return
     }
+
+    val accepted = callStatus == "accepted"
+    val duration = "%02d:%02d".format(elapsedSeconds / 60, elapsedSeconds % 60)
 
     Box(
-        Modifier.fillMaxSize().background(
-            Brush.verticalGradient(listOf(Color(0xFF070A10), Color(0xFF101827), Color(0xFF06080D)))
-        ),
-        contentAlignment = Alignment.Center
+        Modifier
+            .fillMaxSize()
+            .background(Brush.verticalGradient(listOf(Color(0xFF050810), Color(0xFF101827), Color(0xFF05070C))))
     ) {
-        Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-            Surface(Modifier.size(104.dp), CircleShape, color = Color(0xFF1D2940)) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(if (session.video) Icons.Default.Videocam else Icons.Default.Call, null, tint = Color.White, modifier = Modifier.size(48.dp))
-                }
-            }
-            Spacer(Modifier.height(22.dp))
-            Text(heading, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(8.dp))
-            Text(
-                subheading,
-                color = Color.White.copy(alpha = .68f),
-                style = MaterialTheme.typography.bodyLarge
-            )
-            Spacer(Modifier.height(18.dp))
-
-            if (launchError == null) {
-                CircularProgressIndicator(color = Color.White)
-            } else {
-                Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF171C26))) {
-                    Column(Modifier.padding(18.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(launchError ?: "Unable to start call", color = Color(0xFFFFB4AB))
-                        Spacer(Modifier.height(12.dp))
-                        Button(onClick = {
-                            launchError = null
-                            if (!permissionsGranted) {
-                                permissionLauncher.launch(
-                                    buildList {
-                                        add(Manifest.permission.RECORD_AUDIO)
-                                        if (session.video) add(Manifest.permission.CAMERA)
-                                    }.toTypedArray()
-                                )
-                            } else {
-                                launchNativeConference()
-                            }
-                        }) { Text("Allow / Try again") }
+        if (accepted && session.video) {
+            engine?.let { currentEngine ->
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { ctx ->
+                        SurfaceViewRenderer(ctx).also { currentEngine.attachRemoteRenderer(it) }
                     }
-                }
-            }
+                )
 
-            if (instant) {
-                Spacer(Modifier.height(22.dp))
-                Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Share room code", color = Color.White.copy(alpha = .65f))
-                    IconButton(onClick = { clipboard.setText(AnnotatedString(roomCode)) }) {
-                        Icon(Icons.Default.ContentCopy, "Copy room code", tint = Color.White)
+                AndroidView(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 30.dp, end = 18.dp)
+                        .size(width = 112.dp, height = 154.dp)
+                        .clip(RoundedCornerShape(20.dp)),
+                    factory = { ctx ->
+                        SurfaceViewRenderer(ctx).also { currentEngine.attachLocalRenderer(it) }
                     }
-                }
+                )
             }
+        }
 
-            if (!instant && session.outgoing && callStatus == "ringing") {
-                Spacer(Modifier.height(28.dp))
-                FilledIconButton(
-                    onClick = {
-                        scope.launch {
-                            repository?.endCall(session.callId)
-                            finish(false)
-                        }
-                    },
-                    modifier = Modifier.size(68.dp),
-                    colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))
+        if (!accepted || !session.video) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 28.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Surface(
+                    modifier = Modifier.size(122.dp),
+                    shape = CircleShape,
+                    color = Color(0xFF1B2942)
                 ) {
-                    Icon(Icons.Default.CallEnd, "Cancel call", modifier = Modifier.size(30.dp))
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            if (session.video) Icons.Default.Videocam else Icons.Default.Call,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(54.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+                Text(
+                    when {
+                        callStatus == "ringing" -> "Calling"
+                        connected -> if (session.video) "Video call" else "Voice call"
+                        else -> "Connecting"
+                    },
+                    color = Color.White,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    session.peerName.ifBlank { "GlobalCall contact" },
+                    color = Color.White,
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.ExtraBold,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    when {
+                        callStatus == "ringing" -> "Ringing • waiting for answer"
+                        connected -> duration
+                        else -> mediaState
+                    },
+                    color = Color.White.copy(alpha = .68f),
+                    style = MaterialTheme.typography.bodyLarge,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+
+        if (accepted && session.video) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 34.dp, start = 20.dp, end = 145.dp)
+            ) {
+                Text(
+                    session.peerName.ifBlank { "GlobalCall contact" },
+                    color = Color.White,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+                Text(
+                    if (connected) duration else mediaState,
+                    color = Color.White.copy(alpha = .74f),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+
+        mediaError?.let { error ->
+            Card(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 24.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xEE171D2A)),
+                shape = RoundedCornerShape(22.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("Call connection problem", color = Color.White, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+                    Text(error, color = Color(0xFFFFC7C2), textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(12.dp))
+                    TextButton(onClick = {
+                        engine?.close()
+                        engine = null
+                        mediaError = null
+                        if (accepted && permissionsGranted) {
+                            val uid = repository?.currentUid
+                            if (!uid.isNullOrBlank()) {
+                                engine = WebRtcCallEngine(
+                                    context = context,
+                                    callId = session.callId,
+                                    uid = uid,
+                                    outgoing = session.outgoing,
+                                    video = session.video,
+                                    onState = { mediaState = it },
+                                    onConnected = { connected = true; mediaState = "Connected" },
+                                    onError = { mediaError = it }
+                                ).also { it.start() }
+                            }
+                        }
+                    }) { Text("Retry media") }
                 }
             }
+        }
+
+        FilledIconButton(
+            onClick = {
+                scope.launch {
+                    engine?.close()
+                    engine = null
+                    repository?.endCall(session.callId)
+                    finish(false)
+                }
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 46.dp)
+                .size(74.dp),
+            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))
+        ) {
+            Icon(Icons.Default.CallEnd, "End call", modifier = Modifier.size(34.dp), tint = Color.White)
+        }
+
+        if (accepted && !session.video) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = 24.dp, bottom = 54.dp)
+                    .size(58.dp),
+                shape = CircleShape,
+                color = Color(0xFF202B3D)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(Icons.Default.Mic, null, tint = Color.White)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UnsupportedInstantCallScreen(onFinish: () -> Unit) {
+    Surface(Modifier.fillMaxSize(), color = Color(0xFF080C14)) {
+        Column(
+            Modifier.fillMaxSize().padding(32.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(Icons.Default.Videocam, null, tint = Color.White, modifier = Modifier.size(56.dp))
+            Spacer(Modifier.height(20.dp))
+            Text("Sign in for real calling", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "GlobalCall now uses account-to-account native WebRTC so calls can ring, reconnect and identify the correct person. Instant anonymous rooms are disabled in this build.",
+                color = Color.White.copy(alpha = .7f),
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(22.dp))
+            Button(onClick = onFinish) { Text("Back") }
         }
     }
 }
