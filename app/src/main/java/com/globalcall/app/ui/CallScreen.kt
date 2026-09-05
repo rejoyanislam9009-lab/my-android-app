@@ -47,9 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.globalcall.app.ChatActivity
+import com.globalcall.app.calls.ActiveCallEngineStore
 import com.globalcall.app.calls.ActiveCallService
 import com.globalcall.app.data.GlobalCallRepository
-import com.globalcall.app.media.WebRtcCallEngine
 import com.globalcall.app.model.CallSession
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -77,7 +77,7 @@ fun CallScreen(
     var connected by remember(session.callId) { mutableStateOf(false) }
     var elapsedSeconds by remember(session.callId) { mutableIntStateOf(0) }
     var finished by remember(session.callId) { mutableStateOf(false) }
-    var engine by remember(session.callId) { mutableStateOf<WebRtcCallEngine?>(null) }
+    var engine by remember(session.callId) { mutableStateOf(ActiveCallEngineStore.current(session.callId)) }
     var muted by remember(session.callId) { mutableStateOf(false) }
     var cameraOn by remember(session.callId) { mutableStateOf(session.video) }
     var audioRoute by remember(session.callId) { mutableStateOf(if (session.video) "speaker" else "earpiece") }
@@ -100,8 +100,10 @@ fun CallScreen(
     fun finish(updateServer: Boolean) {
         if (!finished) {
             finished = true
-            if (!instant) ActiveCallService.stop(context, session.callId)
-            engine?.close()
+            if (!instant) {
+                ActiveCallEngineStore.close(session.callId)
+                ActiveCallService.stop(context, session.callId)
+            }
             engine = null
             if (!instant) scope.launch { runCatching { repository?.clearMyCallState(session.callId) } }
             onFinish(updateServer)
@@ -208,8 +210,9 @@ fun CallScreen(
     DisposableEffect(activity, session.callId) {
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose {
+            // Never close WebRTC here. Compose/Activity can be disposed while an
+            // accepted call is still alive in ActiveCallEngineStore.
             activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            engine?.close()
         }
     }
 
@@ -331,7 +334,7 @@ fun CallScreen(
             return@LaunchedEffect
         }
 
-        if (callStatus == "accepted" && engine == null && repository != null) {
+        if (callStatus == "accepted" && repository != null) {
             val uid = repository.currentUid
             if (uid.isNullOrBlank()) {
                 mediaError = "Your account session expired. Sign in again."
@@ -339,31 +342,33 @@ fun CallScreen(
             }
 
             mediaError = null
-            connected = false
-            engine = WebRtcCallEngine(
+            val existing = ActiveCallEngineStore.current(session.callId)
+            engine = existing ?: ActiveCallEngineStore.obtain(
                 context = context,
-                callId = session.callId,
-                uid = uid,
-                outgoing = session.outgoing,
-                video = session.video,
-                onState = { mediaState = it },
-                onConnected = { connected = true; mediaState = "Connected" },
-                onError = { mediaError = it; mediaState = "Media connection failed" }
-            ).also {
-                it.start()
-                muted = false
-                cameraOn = session.video
-                audioRoute = it.currentAudioRoute()
-                audioRoutes = it.availableAudioRoutes()
-            }
+                session = session,
+                uid = uid
+            )
+            audioRoute = engine?.currentAudioRoute() ?: audioRoute
+            audioRoutes = engine?.availableAudioRoutes().orEmpty().ifEmpty { audioRoutes }
         }
     }
 
-    LaunchedEffect(engine, finished) {
-        while (engine != null && !finished) {
-            audioRoute = engine?.currentAudioRoute() ?: audioRoute
-            audioRoutes = engine?.availableAudioRoutes().orEmpty().ifEmpty { audioRoutes }
-            delay(600)
+    LaunchedEffect(session.callId, finished) {
+        while (!finished) {
+            val currentEngine = ActiveCallEngineStore.current(session.callId)
+            if (currentEngine != null) engine = currentEngine
+            val snapshot = ActiveCallEngineStore.snapshot(session.callId)
+            mediaState = snapshot.state
+            connected = snapshot.connected
+            mediaError = snapshot.error
+            if (snapshot.connectedAtMs > 0L) {
+                elapsedSeconds = ((System.currentTimeMillis() - snapshot.connectedAtMs) / 1000L)
+                    .coerceAtLeast(0L)
+                    .toInt()
+            }
+            audioRoute = currentEngine?.currentAudioRoute() ?: audioRoute
+            audioRoutes = currentEngine?.availableAudioRoutes().orEmpty().ifEmpty { audioRoutes }
+            delay(350L)
         }
     }
 
@@ -374,15 +379,6 @@ fun CallScreen(
                 runCatching { repository.markMissedCall(session.callId) }
                 finish(false)
             }
-        }
-    }
-
-    LaunchedEffect(connected) {
-        if (!connected) return@LaunchedEffect
-        elapsedSeconds = 0
-        while (connected && !finished) {
-            delay(1_000)
-            elapsedSeconds++
         }
     }
 
@@ -567,7 +563,7 @@ fun CallScreen(
                     Text(error, color = Color(0xFFFFC7C2), textAlign = TextAlign.Center)
                     Spacer(Modifier.height(12.dp))
                     TextButton(onClick = {
-                        engine?.close()
+                        ActiveCallEngineStore.close(session.callId)
                         engine = null
                         mediaError = null
                         mediaState = "Retrying secure media…"
@@ -644,7 +640,7 @@ fun CallScreen(
                     FilledIconButton(
                         onClick = {
                             scope.launch {
-                                engine?.close()
+                                ActiveCallEngineStore.close(session.callId)
                                 engine = null
                                 repository?.endCall(session.callId)
                                 finish(false)
