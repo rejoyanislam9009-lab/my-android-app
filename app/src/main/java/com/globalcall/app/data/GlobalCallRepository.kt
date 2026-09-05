@@ -54,7 +54,8 @@ class GlobalCallRepository(
         return displayCode("GC$hash")
     }
 
-    private fun connectionId(a: String, b: String): String = listOf(a, b).sorted().joinToString("__")
+    private fun connectionId(a: String, b: String): String =
+        listOf(a, b).sorted().joinToString("__")
 
     suspend fun ensureMyCallCode(): String {
         val user = requireNotNull(auth.currentUser) { "Not signed in" }
@@ -65,7 +66,10 @@ class GlobalCallRepository(
         val code = existing.takeIf { it.isNotBlank() } ?: generatedCode(user.uid)
         val key = compactCode(code)
         val codeRef = db.collection("callCodes").document(key)
-        val displayName = user.displayName ?: user.email?.substringBefore('@') ?: user.phoneNumber ?: "GlobalCall user"
+        val displayName = user.displayName
+            ?: user.email?.substringBefore('@')
+            ?: user.phoneNumber
+            ?: "GlobalCall user"
 
         db.runTransaction { tx ->
             val occupied = tx.get(codeRef)
@@ -122,7 +126,12 @@ class GlobalCallRepository(
             val user = userFrom(doc)
             if (user.uid == me) null else user
         }
-        onChange(users.sortedWith(compareByDescending<AppUser> { it.online }.thenBy { it.displayName.lowercase(Locale.ROOT) }))
+        onChange(
+            users.sortedWith(
+                compareByDescending<AppUser> { it.online }
+                    .thenBy { it.displayName.lowercase(Locale.ROOT) }
+            )
+        )
     }
 
     fun observeConnectionUids(
@@ -162,7 +171,9 @@ class GlobalCallRepository(
 
     suspend fun connectByCode(rawCode: String): AppUser {
         val user = requireNotNull(auth.currentUser) { "Not signed in" }
-        val peer = requireNotNull(findUserByCode(rawCode)) { "No GlobalCall account found with this ID" }
+        val peer = requireNotNull(findUserByCode(rawCode)) {
+            "No GlobalCall account found with this ID"
+        }
         val ids = listOf(user.uid, peer.uid).sorted()
         db.collection("connections").document(connectionId(user.uid, peer.uid)).set(
             mapOf(
@@ -231,14 +242,18 @@ class GlobalCallRepository(
         onChange: (CallInvite?) -> Unit,
         onError: (Throwable) -> Unit
     ): ListenerRegistration = db.collection("calls")
-        .whereEqualTo("calleeUid", uid)
-        .whereEqualTo("status", "ringing")
+        .whereArrayContains("participantUids", uid)
         .addSnapshotListener { snapshot, error ->
             if (error != null) {
                 onError(error)
                 return@addSnapshotListener
             }
-            val doc = snapshot?.documents?.maxByOrNull { it.getTimestamp("createdAt")?.seconds ?: 0 }
+            val doc = snapshot?.documents.orEmpty()
+                .filter {
+                    it.getString("calleeUid") == uid &&
+                        it.getString("status") == "ringing"
+                }
+                .maxByOrNull { it.getTimestamp("createdAt")?.seconds ?: 0L }
             onChange(doc?.let {
                 CallInvite(
                     id = it.id,
@@ -277,7 +292,7 @@ class GlobalCallRepository(
                     acceptedAt = doc.getTimestamp("acceptedAt"),
                     endedAt = doc.getTimestamp("endedAt")
                 )
-            }.sortedByDescending { it.createdAt?.seconds ?: 0 }
+            }.sortedByDescending { it.createdAt?.seconds ?: 0L }
             onChange(calls.take(60))
         }
 
@@ -299,13 +314,20 @@ class GlobalCallRepository(
         val livePeer = db.collection("users").document(peer.uid).get().await()
         require(livePeer.exists()) { "This GlobalCall account is unavailable" }
         require(livePeer.getBoolean("online") == true) { "This contact is offline right now" }
-        val blockedByMe = runCatching { db.collection("blocks").document("${user.uid}_${peer.uid}").get().await().exists() }.getOrDefault(false)
-        val blockedByPeer = runCatching { db.collection("blocks").document("${peer.uid}_${user.uid}").get().await().exists() }.getOrDefault(false)
+        val blockedByMe = runCatching {
+            db.collection("blocks").document("${user.uid}_${peer.uid}").get().await().exists()
+        }.getOrDefault(false)
+        val blockedByPeer = runCatching {
+            db.collection("blocks").document("${peer.uid}_${user.uid}").get().await().exists()
+        }.getOrDefault(false)
         require(!blockedByMe && !blockedByPeer) { "Calling is unavailable for this contact" }
+
         val callRef = db.collection("calls").document()
         val roomName = "GlobalCall-${callRef.id}"
         val callerName = user.displayName ?: user.phoneNumber ?: user.email.orEmpty()
-        val calleeName = livePeer.getString("displayName").orEmpty().ifBlank { peer.displayName.ifBlank { "GlobalCall user" } }
+        val calleeName = livePeer.getString("displayName").orEmpty()
+            .ifBlank { peer.displayName.ifBlank { "GlobalCall user" } }
+
         callRef.set(
             mapOf(
                 "callerUid" to user.uid,
@@ -320,6 +342,7 @@ class GlobalCallRepository(
                 "updatedAt" to FieldValue.serverTimestamp()
             )
         ).await()
+
         return CallSession(
             callId = callRef.id,
             peerUid = peer.uid,
@@ -333,9 +356,21 @@ class GlobalCallRepository(
 
     suspend fun acceptCall(invite: CallInvite): CallSession {
         db.collection("calls").document(invite.id).update(
-            mapOf("status" to "accepted", "acceptedAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())
+            mapOf(
+                "status" to "accepted",
+                "acceptedAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
         ).await()
-        return CallSession(invite.id, invite.callerUid, invite.callerName, BuildConfig.MEETING_BASE_URL, invite.roomName.ifBlank { "GlobalCall-${invite.id}" }, invite.video, false)
+        return CallSession(
+            invite.id,
+            invite.callerUid,
+            invite.callerName,
+            BuildConfig.MEETING_BASE_URL,
+            invite.roomName.ifBlank { "GlobalCall-${invite.id}" },
+            invite.video,
+            false
+        )
     }
 
     suspend fun loadInvite(callId: String): CallInvite? {
@@ -355,11 +390,25 @@ class GlobalCallRepository(
     }
 
     suspend fun declineCall(callId: String) {
-        db.collection("calls").document(callId).update(mapOf("status" to "declined", "endedAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())).await()
+        db.collection("calls").document(callId).update(
+            mapOf(
+                "status" to "declined",
+                "endedAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
     }
 
     suspend fun endCall(callId: String) {
-        runCatching { db.collection("calls").document(callId).update(mapOf("status" to "ended", "endedAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())).await() }
+        runCatching {
+            db.collection("calls").document(callId).update(
+                mapOf(
+                    "status" to "ended",
+                    "endedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
     }
 
     suspend fun updateProfile(displayName: String, bio: String) {
@@ -367,10 +416,20 @@ class GlobalCallRepository(
         val cleanName = displayName.trim()
         require(cleanName.length in 2..50) { "Name must be 2-50 characters" }
         require(bio.length <= 120) { "Bio must be 120 characters or less" }
-        user.updateProfile(UserProfileChangeRequest.Builder().setDisplayName(cleanName).build()).await()
+        user.updateProfile(
+            UserProfileChangeRequest.Builder().setDisplayName(cleanName).build()
+        ).await()
         val callCode = ensureMyCallCode()
         db.collection("users").document(user.uid).set(
-            mapOf("uid" to user.uid, "displayName" to cleanName, "email" to user.email.orEmpty().lowercase(Locale.ROOT), "bio" to bio.trim(), "callCode" to callCode, "locale" to Locale.getDefault().toLanguageTag(), "updatedAt" to FieldValue.serverTimestamp()),
+            mapOf(
+                "uid" to user.uid,
+                "displayName" to cleanName,
+                "email" to user.email.orEmpty().lowercase(Locale.ROOT),
+                "bio" to bio.trim(),
+                "callCode" to callCode,
+                "locale" to Locale.getDefault().toLanguageTag(),
+                "updatedAt" to FieldValue.serverTimestamp()
+            ),
             SetOptions.merge()
         ).await()
         runCatching { publishPhoneDirectory() }
@@ -381,11 +440,10 @@ class GlobalCallRepository(
         require(photoData.length <= 260_000) { "Profile photo is too large" }
         val callCode = ensureMyCallCode()
         val key = compactCode(callCode)
-        val now = FieldValue.serverTimestamp()
         db.collection("users").document(user.uid).set(
             mapOf(
                 "photoData" to photoData,
-                "updatedAt" to now
+                "updatedAt" to FieldValue.serverTimestamp()
             ),
             SetOptions.merge()
         ).await()
@@ -402,31 +460,54 @@ class GlobalCallRepository(
 
     suspend fun saveFcmToken(token: String) {
         val uid = currentUid ?: return
-        db.collection("devices").document(uid).set(mapOf("uid" to uid, "fcmToken" to token, "platform" to "android", "updatedAt" to FieldValue.serverTimestamp()), SetOptions.merge()).await()
+        db.collection("devices").document(uid).set(
+            mapOf(
+                "uid" to uid,
+                "fcmToken" to token,
+                "platform" to "android",
+                "updatedAt" to FieldValue.serverTimestamp()
+            ),
+            SetOptions.merge()
+        ).await()
     }
 
     suspend fun setOnline(online: Boolean) {
+        // The background connection service owns offline state. The UI lifecycle may
+        // stop while the phone still has internet (screen off, another activity, call UI),
+        // so an ON_STOP event must never mark the account offline.
+        if (!online) return
+
         val user = auth.currentUser ?: return
         val phone = user.phoneNumber
-        val code = if (online) runCatching { ensureMyCallCode() }.getOrDefault("") else ""
+        val code = runCatching { ensureMyCallCode() }.getOrDefault("")
         val data = mutableMapOf<String, Any>(
             "uid" to user.uid,
             "displayName" to (user.displayName ?: phone ?: user.email.orEmpty()),
             "email" to user.email.orEmpty().lowercase(Locale.ROOT),
-            "phoneLast4" to (phone?.let { runCatching { PhoneDirectory.last4(PhoneDirectory.normalize(it)) }.getOrDefault("") } ?: ""),
-            "online" to online,
+            "phoneLast4" to (
+                phone?.let {
+                    runCatching { PhoneDirectory.last4(PhoneDirectory.normalize(it)) }.getOrDefault("")
+                } ?: ""
+            ),
+            "online" to true,
             "lastSeen" to FieldValue.serverTimestamp(),
             "updatedAt" to FieldValue.serverTimestamp()
         )
         if (code.isNotBlank()) data["callCode"] = code
         db.collection("users").document(user.uid).set(data, SetOptions.merge()).await()
-        if (online) runCatching { publishPhoneDirectory() }
+        runCatching { publishPhoneDirectory() }
     }
 
     suspend fun blockUser(peerUid: String) {
         val uid = requireNotNull(currentUid) { "Not signed in" }
         require(peerUid != uid)
-        db.collection("blocks").document("${uid}_$peerUid").set(mapOf("blockerUid" to uid, "blockedUid" to peerUid, "createdAt" to FieldValue.serverTimestamp())).await()
+        db.collection("blocks").document("${uid}_$peerUid").set(
+            mapOf(
+                "blockerUid" to uid,
+                "blockedUid" to peerUid,
+                "createdAt" to FieldValue.serverTimestamp()
+            )
+        ).await()
     }
 
     suspend fun unblockUser(peerUid: String) {
@@ -436,6 +517,14 @@ class GlobalCallRepository(
 
     suspend fun reportUser(peerUid: String, reason: String) {
         val uid = requireNotNull(currentUid) { "Not signed in" }
-        db.collection("reports").add(mapOf("reporterUid" to uid, "reportedUid" to peerUid, "reason" to reason.take(300), "createdAt" to FieldValue.serverTimestamp(), "status" to "open")).await()
+        db.collection("reports").add(
+            mapOf(
+                "reporterUid" to uid,
+                "reportedUid" to peerUid,
+                "reason" to reason.take(300),
+                "createdAt" to FieldValue.serverTimestamp(),
+                "status" to "open"
+            )
+        ).await()
     }
 }
