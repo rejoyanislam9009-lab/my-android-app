@@ -21,7 +21,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import com.globalcall.app.R
 import com.globalcall.app.data.PhoneDirectory
 import com.google.firebase.FirebaseException
 import com.google.firebase.auth.FirebaseAuth
@@ -36,6 +35,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+
+private fun phoneAuthMessage(t: Throwable): String {
+    val raw = t.message.orEmpty()
+    return when {
+        raw.contains("BILLING_NOT_ENABLED", ignoreCase = true) ->
+            "Phone OTP is not active for this Firebase project yet. Enable Firebase Blaze billing, then try again."
+        raw.contains("INVALID_PHONE_NUMBER", ignoreCase = true) ||
+            raw.contains("invalid phone", ignoreCase = true) ->
+            "Enter the number in international format. For Saudi Arabia use +9665XXXXXXXX (do not include the local 0)."
+        raw.contains("TOO_MANY_ATTEMPTS", ignoreCase = true) ||
+            raw.contains("quota", ignoreCase = true) ->
+            "Too many OTP requests. Please wait and try again."
+        raw.contains("NETWORK", ignoreCase = true) ->
+            "Check your internet connection and try again."
+        else -> raw.takeIf { it.isNotBlank() } ?: "Phone verification failed"
+    }
+}
 
 @Composable
 fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
@@ -99,7 +115,7 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
             runCatching {
                 auth.signInWithCredential(credential).await()
                 persistSignedInUser()
-            }.onFailure { error = it.message ?: "Could not verify this number" }
+            }.onFailure { error = phoneAuthMessage(it) }
             loading = false
         }
     }
@@ -112,7 +128,7 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
 
             override fun onVerificationFailed(exception: FirebaseException) {
                 loading = false
-                error = exception.message ?: "Phone verification failed"
+                error = phoneAuthMessage(exception)
             }
 
             override fun onCodeSent(
@@ -195,6 +211,13 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp)
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Saudi example: 05XXXXXXXX → +9665XXXXXXXX",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.fillMaxWidth()
                     )
                     Spacer(Modifier.height(10.dp))
                     if (verificationId != null) {
