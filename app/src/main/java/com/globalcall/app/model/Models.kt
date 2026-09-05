@@ -8,6 +8,7 @@ data class AppUser(
     val email: String = "",
     val bio: String = "",
     val photoUrl: String = "",
+    val phoneLast4: String = "",
     val online: Boolean = false,
     val lastSeen: Timestamp? = null
 )
