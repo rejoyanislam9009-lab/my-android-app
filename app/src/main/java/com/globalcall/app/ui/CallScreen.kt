@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
+import android.os.Build
+import android.os.PowerManager
 import android.view.WindowManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,8 +18,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.VideocamOff
+import androidx.compose.material.icons.filled.VolumeOff
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,8 +52,8 @@ fun CallScreen(
     onFinish: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val activity = context as? Activity
+    val scope = rememberCoroutineScope()
     val instant = session.callId.startsWith("instant-") || repository == null
 
     var callStatus by remember(session.callId) {
@@ -58,6 +65,9 @@ fun CallScreen(
     var elapsedSeconds by remember(session.callId) { mutableIntStateOf(0) }
     var finished by remember(session.callId) { mutableStateOf(false) }
     var engine by remember(session.callId) { mutableStateOf<WebRtcCallEngine?>(null) }
+    var muted by remember(session.callId) { mutableStateOf(false) }
+    var cameraOn by remember(session.callId) { mutableStateOf(session.video) }
+    var audioRoute by remember(session.callId) { mutableStateOf(if (session.video) "speaker" else "earpiece") }
 
     var permissionsGranted by remember(session.callId) {
         mutableStateOf(
@@ -80,6 +90,29 @@ fun CallScreen(
         onDispose {
             activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             engine?.close()
+        }
+    }
+
+    // Audio calls behave like a normal phone call: while this wake lock is held,
+    // Android's proximity sensor turns the screen off near the ear and back on
+    // when the phone is moved away.
+    DisposableEffect(callStatus, session.video, finished) {
+        val wakeLock = if (!session.video && callStatus == "accepted" && !finished) {
+            val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (power.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
+                runCatching {
+                    power.newWakeLock(
+                        PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK,
+                        "GlobalCall:audioProximity"
+                    ).apply {
+                        setReferenceCounted(false)
+                        acquire()
+                    }
+                }.getOrNull()
+            } else null
+        } else null
+        onDispose {
+            if (wakeLock?.isHeld == true) runCatching { wakeLock.release() }
         }
     }
 
@@ -113,11 +146,11 @@ fun CallScreen(
     }
 
     DisposableEffect(session.callId, callStatus, session.outgoing) {
-        val ringback: MediaPlayer? = if (!instant && session.outgoing && callStatus == "ringing" && !finished) {
+        val ringback = if (!instant && session.outgoing && callStatus == "ringing" && !finished) {
             runCatching {
                 MediaPlayer.create(context, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))?.apply {
                     isLooping = true
-                    setVolume(0.22f, 0.22f)
+                    setVolume(0.20f, 0.20f)
                     start()
                 }
             }.getOrNull()
@@ -136,6 +169,7 @@ fun CallScreen(
                 buildList {
                     add(Manifest.permission.RECORD_AUDIO)
                     if (session.video) add(Manifest.permission.CAMERA)
+                    if (Build.VERSION.SDK_INT >= 31) add(Manifest.permission.BLUETOOTH_CONNECT)
                 }.toTypedArray()
             )
             return@LaunchedEffect
@@ -158,7 +192,19 @@ fun CallScreen(
                 onState = { mediaState = it },
                 onConnected = { connected = true; mediaState = "Connected" },
                 onError = { mediaError = it; mediaState = "Media connection failed" }
-            ).also { it.start() }
+            ).also {
+                it.start()
+                muted = false
+                cameraOn = session.video
+                audioRoute = it.currentAudioRoute()
+            }
+        }
+    }
+
+    LaunchedEffect(engine, finished) {
+        while (engine != null && !finished) {
+            audioRoute = engine?.currentAudioRoute() ?: audioRoute
+            delay(600)
         }
     }
 
@@ -188,51 +234,53 @@ fun CallScreen(
 
     val accepted = callStatus == "accepted"
     val duration = "%02d:%02d".format(elapsedSeconds / 60, elapsedSeconds % 60)
+    val bg = Brush.verticalGradient(listOf(Color(0xFF03060B), Color(0xFF111A2A), Color(0xFF05070C)))
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(Brush.verticalGradient(listOf(Color(0xFF050810), Color(0xFF101827), Color(0xFF05070C))))
-    ) {
+    Box(Modifier.fillMaxSize().background(bg)) {
         if (accepted && session.video) {
             engine?.let { currentEngine ->
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
-                    factory = { ctx ->
-                        SurfaceViewRenderer(ctx).also { currentEngine.attachRemoteRenderer(it) }
-                    }
+                    factory = { ctx -> SurfaceViewRenderer(ctx).also { currentEngine.attachRemoteRenderer(it) } }
                 )
 
-                AndroidView(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 30.dp, end = 18.dp)
-                        .size(width = 112.dp, height = 154.dp)
-                        .clip(RoundedCornerShape(20.dp)),
-                    factory = { ctx ->
-                        SurfaceViewRenderer(ctx).also { currentEngine.attachLocalRenderer(it) }
+                if (cameraOn) {
+                    AndroidView(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 56.dp, end = 18.dp)
+                            .size(width = 116.dp, height = 158.dp)
+                            .clip(RoundedCornerShape(22.dp)),
+                        factory = { ctx -> SurfaceViewRenderer(ctx).also { currentEngine.attachLocalRenderer(it) } }
+                    )
+                } else {
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 56.dp, end = 18.dp)
+                            .size(width = 116.dp, height = 158.dp),
+                        shape = RoundedCornerShape(22.dp),
+                        color = Color(0xDD151B26)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.VideocamOff, null, tint = Color.White.copy(alpha = .75f), modifier = Modifier.size(34.dp))
+                        }
                     }
-                )
+                }
             }
         }
 
         if (!accepted || !session.video) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 28.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 28.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Surface(
-                    modifier = Modifier.size(122.dp),
-                    shape = CircleShape,
-                    color = Color(0xFF1B2942)
-                ) {
+                Surface(modifier = Modifier.size(126.dp), shape = CircleShape, color = Color(0xFF1A2A45)) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             if (session.video) Icons.Default.Videocam else Icons.Default.Call,
-                            contentDescription = null,
+                            null,
                             tint = Color.White,
                             modifier = Modifier.size(54.dp)
                         )
@@ -268,14 +316,24 @@ fun CallScreen(
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center
                 )
+                if (accepted && !session.video) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        when (audioRoute) {
+                            "bluetooth" -> "Bluetooth audio"
+                            "speaker" -> "Speaker on"
+                            else -> "Earpiece • proximity sensor active"
+                        },
+                        color = Color.White.copy(alpha = .48f),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
             }
         }
 
         if (accepted && session.video) {
             Column(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = 34.dp, start = 20.dp, end = 145.dp)
+                modifier = Modifier.align(Alignment.TopStart).padding(top = 58.dp, start = 20.dp, end = 150.dp)
             ) {
                 Text(
                     session.peerName.ifBlank { "GlobalCall contact" },
@@ -285,7 +343,7 @@ fun CallScreen(
                     maxLines = 1
                 )
                 Text(
-                    if (connected) duration else mediaState,
+                    if (connected) "$duration • ${audioRoute.replaceFirstChar { it.uppercase() }}" else mediaState,
                     color = Color.White.copy(alpha = .74f),
                     style = MaterialTheme.typography.bodyMedium
                 )
@@ -294,16 +352,11 @@ fun CallScreen(
 
         mediaError?.let { error ->
             Card(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .padding(horizontal = 24.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xEE171D2A)),
+                modifier = Modifier.align(Alignment.Center).padding(horizontal = 24.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xF2171D2A)),
                 shape = RoundedCornerShape(22.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+                Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Call connection problem", color = Color.White, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
                     Text(error, color = Color(0xFFFFC7C2), textAlign = TextAlign.Center)
@@ -312,58 +365,115 @@ fun CallScreen(
                         engine?.close()
                         engine = null
                         mediaError = null
-                        if (accepted && permissionsGranted) {
-                            val uid = repository?.currentUid
-                            if (!uid.isNullOrBlank()) {
-                                engine = WebRtcCallEngine(
-                                    context = context,
-                                    callId = session.callId,
-                                    uid = uid,
-                                    outgoing = session.outgoing,
-                                    video = session.video,
-                                    onState = { mediaState = it },
-                                    onConnected = { connected = true; mediaState = "Connected" },
-                                    onError = { mediaError = it }
-                                ).also { it.start() }
-                            }
-                        }
                     }) { Text("Retry media") }
                 }
             }
         }
 
-        FilledIconButton(
-            onClick = {
-                scope.launch {
-                    engine?.close()
-                    engine = null
-                    repository?.endCall(session.callId)
-                    finish(false)
-                }
-            },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 46.dp)
-                .size(74.dp),
-            colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))
-        ) {
-            Icon(Icons.Default.CallEnd, "End call", modifier = Modifier.size(34.dp), tint = Color.White)
-        }
-
-        if (accepted && !session.video) {
+        if (accepted) {
             Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 24.dp, bottom = 54.dp)
-                    .size(58.dp),
-                shape = CircleShape,
-                color = Color(0xFF202B3D)
+                modifier = Modifier.align(Alignment.BottomCenter).padding(start = 14.dp, end = 14.dp, bottom = 22.dp),
+                shape = RoundedCornerShape(32.dp),
+                color = Color(0xE61A1F29),
+                tonalElevation = 8.dp
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.Mic, null, tint = Color.White)
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CallControlButton(
+                        selected = muted,
+                        icon = if (muted) Icons.Default.MicOff else Icons.Default.Mic,
+                        label = if (muted) "Unmute" else "Mute"
+                    ) {
+                        muted = !(muted)
+                        engine?.setMuted(muted)
+                    }
+
+                    CallControlButton(
+                        selected = audioRoute == "speaker",
+                        icon = if (audioRoute == "speaker") Icons.Default.VolumeUp else Icons.Default.VolumeOff,
+                        label = when (audioRoute) {
+                            "bluetooth" -> "Bluetooth"
+                            "speaker" -> "Speaker"
+                            else -> "Audio"
+                        }
+                    ) {
+                        audioRoute = engine?.setSpeakerEnabled(audioRoute != "speaker") ?: audioRoute
+                    }
+
+                    if (session.video) {
+                        CallControlButton(
+                            selected = !cameraOn,
+                            icon = if (cameraOn) Icons.Default.Videocam else Icons.Default.VideocamOff,
+                            label = if (cameraOn) "Camera" else "Camera off"
+                        ) {
+                            cameraOn = engine?.setCameraEnabled(!cameraOn) ?: cameraOn
+                        }
+                        CallControlButton(
+                            selected = false,
+                            icon = Icons.Default.Cameraswitch,
+                            label = "Flip",
+                            enabled = cameraOn
+                        ) { engine?.switchCamera() }
+                    }
+
+                    FilledIconButton(
+                        onClick = {
+                            scope.launch {
+                                engine?.close()
+                                engine = null
+                                repository?.endCall(session.callId)
+                                finish(false)
+                            }
+                        },
+                        modifier = Modifier.size(58.dp),
+                        colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))
+                    ) {
+                        Icon(Icons.Default.CallEnd, "End call", tint = Color.White, modifier = Modifier.size(28.dp))
+                    }
                 }
             }
+        } else {
+            FilledIconButton(
+                onClick = {
+                    scope.launch {
+                        repository?.endCall(session.callId)
+                        finish(false)
+                    }
+                },
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 46.dp).size(74.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(containerColor = Color(0xFFFF3B30))
+            ) {
+                Icon(Icons.Default.CallEnd, "End call", modifier = Modifier.size(34.dp), tint = Color.White)
+            }
         }
+    }
+}
+
+@Composable
+private fun CallControlButton(
+    selected: Boolean,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(60.dp)) {
+        FilledIconButton(
+            onClick = onClick,
+            enabled = enabled,
+            modifier = Modifier.size(48.dp),
+            colors = IconButtonDefaults.filledIconButtonColors(
+                containerColor = if (selected) Color.White else Color(0xFF303744),
+                contentColor = if (selected) Color(0xFF0A0D12) else Color.White,
+                disabledContainerColor = Color(0xFF242A34),
+                disabledContentColor = Color.White.copy(alpha = .35f)
+            )
+        ) { Icon(icon, label, modifier = Modifier.size(23.dp)) }
+        Spacer(Modifier.height(4.dp))
+        Text(label, color = Color.White.copy(alpha = if (enabled) .75f else .35f), style = MaterialTheme.typography.labelSmall, maxLines = 1)
     }
 }
 
@@ -380,7 +490,7 @@ private fun UnsupportedInstantCallScreen(onFinish: () -> Unit) {
             Text("Sign in for real calling", color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(10.dp))
             Text(
-                "GlobalCall now uses account-to-account native WebRTC so calls can ring, reconnect and identify the correct person. Instant anonymous rooms are disabled in this build.",
+                "GlobalCall uses account-to-account native WebRTC for reliable voice and video calls.",
                 color = Color.White.copy(alpha = .7f),
                 textAlign = TextAlign.Center
             )
