@@ -209,18 +209,13 @@ private fun CloudAccountHost(
 
     var currentUser by remember(runtime.auth) { mutableStateOf(runtime.auth.currentUser) }
     DisposableEffect(runtime.auth) {
-        val listener = FirebaseAuth.AuthStateListener { auth ->
-            currentUser = auth.currentUser
-        }
+        val listener = FirebaseAuth.AuthStateListener { auth -> currentUser = auth.currentUser }
         runtime.auth.addAuthStateListener(listener)
         onDispose { runtime.auth.removeAuthStateListener(listener) }
     }
 
     LaunchedEffect(currentUser?.uid) {
         if (currentUser != null) {
-            // Push-first background architecture: do not keep an idle foreground service
-            // alive just to show presence. Save the current FCM token so real incoming-call
-            // pushes can wake the app without a permanent status notification.
             FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
                 scope.launch { runCatching { runtime.repository.saveFcmToken(token) } }
             }
@@ -231,6 +226,13 @@ private fun CloudAccountHost(
                 ContextCompat.checkSelfPermission(uiContext, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
             ) {
                 (uiContext as? Activity)?.requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 4120)
+            }
+
+            if (
+                Build.VERSION.SDK_INT >= 31 &&
+                ContextCompat.checkSelfPermission(uiContext, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+            ) {
+                (uiContext as? Activity)?.requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 4121)
             }
         }
     }
