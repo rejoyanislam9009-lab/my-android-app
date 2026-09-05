@@ -3,6 +3,7 @@ package com.globalcall.app.ui
 import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.media.RingtoneManager
@@ -19,6 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Cameraswitch
+import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Videocam
@@ -38,6 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.globalcall.app.ChatActivity
 import com.globalcall.app.data.GlobalCallRepository
 import com.globalcall.app.media.WebRtcCallEngine
 import com.globalcall.app.model.CallSession
@@ -85,6 +88,16 @@ fun CallScreen(
         }
     }
 
+    fun openChat() {
+        if (session.peerUid.isBlank()) return
+        context.startActivity(
+            Intent(context, ChatActivity::class.java).apply {
+                putExtra(ChatActivity.EXTRA_PEER_UID, session.peerUid)
+                putExtra(ChatActivity.EXTRA_PEER_NAME, session.peerName)
+            }
+        )
+    }
+
     DisposableEffect(activity, session.callId) {
         activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose {
@@ -93,9 +106,6 @@ fun CallScreen(
         }
     }
 
-    // Audio calls behave like a normal phone call: while this wake lock is held,
-    // Android's proximity sensor turns the screen off near the ear and back on
-    // when the phone is moved away.
     DisposableEffect(callStatus, session.video, finished) {
         val wakeLock = if (!session.video && callStatus == "accepted" && !finished) {
             val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -350,6 +360,22 @@ fun CallScreen(
             }
         }
 
+        if (accepted && session.peerUid.isNotBlank()) {
+            FilledIconButton(
+                onClick = ::openChat,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 18.dp, bottom = 112.dp)
+                    .size(52.dp),
+                colors = IconButtonDefaults.filledIconButtonColors(
+                    containerColor = Color(0xCC2A3342),
+                    contentColor = Color.White
+                )
+            ) {
+                Icon(Icons.Default.Chat, "Messages")
+            }
+        }
+
         mediaError?.let { error ->
             Card(
                 modifier = Modifier.align(Alignment.Center).padding(horizontal = 24.dp),
@@ -387,7 +413,7 @@ fun CallScreen(
                         icon = if (muted) Icons.Default.MicOff else Icons.Default.Mic,
                         label = if (muted) "Unmute" else "Mute"
                     ) {
-                        muted = !(muted)
+                        muted = !muted
                         engine?.setMuted(muted)
                     }
 
