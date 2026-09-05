@@ -3,20 +3,7 @@ package com.globalcall.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -24,25 +11,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Send
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledIconButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -50,8 +23,16 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.globalcall.app.data.ChatMessage
 import com.globalcall.app.data.ChatRepository
+import com.globalcall.app.data.ConversationState
+import com.globalcall.app.data.GlobalCallRepository
+import com.globalcall.app.model.AppUser
+import com.globalcall.app.model.CallSession
+import com.globalcall.app.ui.CallScreen
 import com.globalcall.app.ui.theme.GlobalCallTheme
+import com.google.firebase.Timestamp
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -68,7 +49,7 @@ class ChatActivity : ComponentActivity() {
         }
         setContent {
             GlobalCallTheme {
-                ChatScreen(peerUid = peerUid, peerName = peerName, onBack = { finish() })
+                ChatHost(peerUid = peerUid, initialPeerName = peerName, onBack = { finish() })
             }
         }
     }
@@ -79,42 +60,149 @@ class ChatActivity : ComponentActivity() {
     }
 }
 
+@Composable
+private fun ChatHost(peerUid: String, initialPeerName: String, onBack: () -> Unit) {
+    val callRepository = remember { GlobalCallRepository() }
+    var session by remember { mutableStateOf<CallSession?>(null) }
+
+    session?.let { callSession ->
+        CallScreen(
+            session = callSession,
+            repository = callRepository,
+            onFinish = { session = null }
+        )
+        return
+    }
+
+    ChatScreen(
+        peerUid = peerUid,
+        initialPeerName = initialPeerName,
+        onBack = onBack,
+        onStartCall = { video, onError ->
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main).launch {
+                runCatching {
+                    callRepository.startCall(
+                        AppUser(uid = peerUid, displayName = initialPeerName, online = true),
+                        video
+                    )
+                }.onSuccess { session = it }
+                    .onFailure { onError(it.message ?: "Could not start call") }
+            }
+        }
+    )
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ChatScreen(peerUid: String, peerName: String, onBack: () -> Unit) {
+private fun ChatScreen(
+    peerUid: String,
+    initialPeerName: String,
+    onBack: () -> Unit,
+    onStartCall: (Boolean, (String) -> Unit) -> Unit
+) {
     val repository = remember { ChatRepository() }
     val myUid = FirebaseAuth.getInstance().currentUser?.uid.orEmpty()
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
     var messages by remember(peerUid) { mutableStateOf<List<ChatMessage>>(emptyList()) }
+    var conversation by remember(peerUid) { mutableStateOf<ConversationState?>(null) }
+    var peerName by remember(peerUid) { mutableStateOf(initialPeerName) }
+    var peerOnline by remember(peerUid) { mutableStateOf(false) }
+    var peerLastSeen by remember(peerUid) { mutableStateOf<Timestamp?>(null) }
     var draft by remember(peerUid) { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(peerUid) {
-        val registration = repository.observeMessages(
+        val messageRegistration = repository.observeMessages(
             peerUid = peerUid,
             onChange = { messages = it; error = null },
             onError = { error = "Messages are syncing. Check your connection." }
         )
-        onDispose { registration.remove() }
+        val conversationRegistration = repository.observeConversation(
+            peerUid = peerUid,
+            onChange = { conversation = it },
+            onError = { }
+        )
+        val peerRegistration = FirebaseFirestore.getInstance().collection("users").document(peerUid)
+            .addSnapshotListener { snapshot, _ ->
+                if (snapshot != null && snapshot.exists()) {
+                    peerName = snapshot.getString("displayName").orEmpty().ifBlank { initialPeerName }
+                    peerOnline = snapshot.getBoolean("online") ?: false
+                    peerLastSeen = snapshot.getTimestamp("lastSeen")
+                }
+            }
+        onDispose {
+            messageRegistration.remove()
+            conversationRegistration.remove()
+            peerRegistration.remove()
+            scope.launch { runCatching { repository.setTyping(peerUid, false) } }
+        }
     }
 
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    LaunchedEffect(messages.size, messages.lastOrNull()?.readAt) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.lastIndex)
+            if (messages.any { it.receiverUid == myUid && it.readAt == null }) {
+                runCatching { repository.markRead(peerUid) }
+            }
+        }
+    }
+
+    LaunchedEffect(draft) {
+        if (draft.isBlank()) {
+            runCatching { repository.setTyping(peerUid, false) }
+        } else {
+            delay(450)
+            runCatching { repository.setTyping(peerUid, true) }
+            delay(2_500)
+            runCatching { repository.setTyping(peerUid, false) }
+        }
+    }
+
+    val peerTyping = conversation?.let { state ->
+        val age = state.typingAt?.let { (System.currentTimeMillis() / 1000L) - it.seconds } ?: Long.MAX_VALUE
+        state.typingUid == peerUid && age in 0..8
+    } == true
+
+    val subtitle = when {
+        peerTyping -> "typing…"
+        peerOnline -> "Online"
+        peerLastSeen != null -> "Last seen ${formatLastSeen(peerLastSeen!!)}"
+        else -> "GlobalCall Messages"
     }
 
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(peerName, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("GlobalCall Messages", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                            Box(Modifier.size(38.dp), contentAlignment = Alignment.Center) {
+                                Text(peerName.take(1).uppercase(), fontWeight = FontWeight.ExtraBold)
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text(peerName, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                subtitle,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (peerTyping || peerOnline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
+                },
+                actions = {
+                    IconButton(onClick = { onStartCall(false) { error = it } }) {
+                        Icon(Icons.Default.Call, "Voice call")
+                    }
+                    IconButton(onClick = { onStartCall(true) { error = it } }) {
+                        Icon(Icons.Default.Videocam, "Video call")
+                    }
                 }
             )
         }
@@ -139,17 +227,32 @@ private fun ChatScreen(peerUid: String, peerName: String, onBack: () -> Unit) {
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
                             Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                                Text("💬", modifier = Modifier.padding(18.dp), style = MaterialTheme.typography.headlineMedium)
+                                Box(Modifier.size(74.dp), contentAlignment = Alignment.Center) {
+                                    Text("💬", style = MaterialTheme.typography.headlineMedium)
+                                }
                             }
-                            Spacer(Modifier.height(12.dp))
+                            Spacer(Modifier.height(14.dp))
                             Text("Start a conversation", fontWeight = FontWeight.Bold)
-                            Text("Messages use internet, not carrier SMS.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "Private GlobalCall internet messages. No carrier SMS charge.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
                 }
                 items(messages, key = { it.id }) { message ->
                     MessageBubble(message = message, mine = message.senderUid == myUid)
                 }
+            }
+
+            if (peerTyping) {
+                Text(
+                    "$peerName is typing…",
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelMedium
+                )
             }
 
             error?.let {
@@ -182,6 +285,7 @@ private fun ChatScreen(peerUid: String, peerName: String, onBack: () -> Unit) {
                             val text = draft
                             scope.launch {
                                 sending = true
+                                runCatching { repository.setTyping(peerUid, false) }
                                 runCatching { repository.sendMessage(peerUid, text) }
                                     .onSuccess { draft = ""; error = null }
                                     .onFailure { error = it.message ?: "Could not send message" }
@@ -213,16 +317,45 @@ private fun MessageBubble(message: ChatMessage, mine: Boolean) {
             ),
             color = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
         ) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp).fillMaxWidth(.78f)) {
-                Text(message.text, color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp).widthIn(max = 300.dp)) {
+                Text(
+                    message.text,
+                    color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 val time = message.createdAt?.toDate()?.let {
                     SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(it.time))
                 }.orEmpty()
                 if (time.isNotBlank()) {
                     Spacer(Modifier.height(3.dp))
-                    Text(time, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .65f))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            time,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .65f)
+                        )
+                        if (mine) {
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                if (message.readAt != null) "✓✓ Read" else "✓ Sent",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (message.readAt != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .65f)
+                            )
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+private fun formatLastSeen(timestamp: Timestamp): String {
+    val date = timestamp.toDate()
+    val now = System.currentTimeMillis()
+    val diff = now - date.time
+    return when {
+        diff < 60_000L -> "just now"
+        diff < 60 * 60_000L -> "${(diff / 60_000L).coerceAtLeast(1)} min ago"
+        diff < 24 * 60 * 60_000L -> SimpleDateFormat("h:mm a", Locale.getDefault()).format(date)
+        else -> SimpleDateFormat("MMM d, h:mm a", Locale.getDefault()).format(date)
     }
 }
