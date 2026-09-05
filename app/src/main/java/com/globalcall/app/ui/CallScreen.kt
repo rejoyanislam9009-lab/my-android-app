@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.media.MediaPlayer
+import android.media.RingtoneManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -88,6 +90,26 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
         }
     }
 
+    // Give the caller audible feedback while the remote user is actually ringing.
+    // The player is disposed immediately when the call is accepted, declined or cancelled.
+    DisposableEffect(session.callId, callStatus, session.outgoing) {
+        val ringback = if (!instant && session.outgoing && callStatus == "ringing" && !finished) {
+            runCatching {
+                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                MediaPlayer.create(context, uri)?.apply {
+                    isLooping = true
+                    setVolume(0.28f, 0.28f)
+                    start()
+                }
+            }.getOrNull()
+        } else null
+
+        onDispose {
+            runCatching { ringback?.stop() }
+            runCatching { ringback?.release() }
+        }
+    }
+
     DisposableEffect(session.callId) {
         val filter = IntentFilter().apply {
             addAction(BroadcastEvent.Type.CONFERENCE_WILL_JOIN.action)
@@ -167,6 +189,13 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
         else -> "Starting secure call…"
     }
 
+    val subheading = when {
+        !instant && session.outgoing && callStatus == "ringing" -> "Ringing • waiting for answer"
+        !instant && callStatus == "accepted" && !joined -> "Answered • opening secure media"
+        instant -> "Private room $roomCode"
+        else -> session.peerName.ifBlank { "GlobalCall contact" }
+    }
+
     Box(
         Modifier.fillMaxSize().background(
             Brush.verticalGradient(listOf(Color(0xFF070A10), Color(0xFF101827), Color(0xFF06080D)))
@@ -183,7 +212,7 @@ fun CallScreen(session: CallSession, repository: GlobalCallRepository?, onFinish
             Text(heading, color = Color.White, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Text(
-                if (instant) "Private room $roomCode" else session.peerName.ifBlank { "GlobalCall contact" },
+                subheading,
                 color = Color.White.copy(alpha = .68f),
                 style = MaterialTheme.typography.bodyLarge
             )
