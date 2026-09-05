@@ -18,15 +18,15 @@ android {
         applicationId = "com.globalcall.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "1.1.2"
+        versionCode = 17
+        versionName = "1.2.0"
 
         buildConfigField("String", "FIREBASE_API_KEY", "\"AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"guide-c4c2c\"")
         buildConfigField("String", "FIREBASE_APP_ID", "\"1:512749667590:android:52c5f18cb89921b923ca87\"")
         buildConfigField("String", "FIREBASE_SENDER_ID", "\"512749667590\"")
         buildConfigField("String", "FIREBASE_STORAGE_BUCKET", "\"guide-c4c2c.firebasestorage.app\"")
-        buildConfigField("String", "MEETING_BASE_URL", "\"https://meet.jit.si\"")
+        buildConfigField("String", "MEETING_BASE_URL", "\"direct-webrtc\"")
     }
 
     splits {
@@ -97,6 +97,5 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.9.0")
 
-    implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
-    implementation("org.jitsi.react:jitsi-meet-sdk:13.1.0") { isTransitive = true }
+    implementation("io.github.webrtc-sdk:android:144.7559.14")
 }
