@@ -53,9 +53,12 @@ function hasAnotherLiveCall(profile, incomingCallId) {
     : 0;
   if (!updatedMs) return false;
   const ageMs = Math.max(0, Date.now() - updatedMs);
+
+  // The Android ActiveCallService refreshes accepted calls every 30 seconds.
+  // A missing heartbeat must not leave someone "busy" for hours after a crash.
   return state === "active"
-    ? ageMs < 6 * 60 * 60 * 1000
-    : ageMs < 2 * 60 * 1000;
+    ? ageMs < 120 * 1000
+    : ageMs < 90 * 1000;
 }
 
 exports.pushIncomingCall = onDocumentCreated(
@@ -86,6 +89,7 @@ exports.pushIncomingCall = onDocumentCreated(
         {
           type: "call_waiting",
           callId,
+          calleeUid,
           callerUid,
           callerName,
           video: String(call.video !== false),
@@ -110,6 +114,7 @@ exports.pushIncomingCall = onDocumentCreated(
       {
         type: "incoming_call",
         callId,
+        calleeUid,
         callerUid,
         callerName,
         video: String(call.video !== false),
