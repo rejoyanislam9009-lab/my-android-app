@@ -18,12 +18,12 @@ android {
         applicationId = "com.globalcall.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "1.0.0"
+        versionCode = 12
+        versionName = "1.0.1"
 
         buildConfigField("String", "FIREBASE_API_KEY", "\"AIzaSyAGr0BN1CbqiL_WcgZ8br20Np14zp_8NaE\"")
         buildConfigField("String", "FIREBASE_PROJECT_ID", "\"guide-c4c2c\"")
-        buildConfigField("String", "FIREBASE_APP_ID", "\"1:512749667590:android:cbd98fa7db7988e523ca87\"")
+        buildConfigField("String", "FIREBASE_APP_ID", "\"1:512749667590:android:52c5f18cb89921b923ca87\"")
         buildConfigField("String", "FIREBASE_SENDER_ID", "\"512749667590\"")
         buildConfigField("String", "FIREBASE_STORAGE_BUCKET", "\"guide-c4c2c.firebasestorage.app\"")
         buildConfigField("String", "MEETING_BASE_URL", "\"https://meet.jit.si\"")

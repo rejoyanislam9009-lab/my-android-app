@@ -9,6 +9,7 @@ on:
       - 'settings.gradle.kts'
       - 'gradle.properties'
       - '.github/workflows/globalcall-android.yml'
+      - '.github/keys/guide-beta-keystore.b64'
   push:
     branches:
       - feature/global-video-calling-app
@@ -22,23 +23,47 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Prepare stable GlobalCall signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .github/keys/guide-beta-keystore.b64 > "$RUNNER_TEMP/globalcall-beta.jks"
+          echo "GLOBALCALL_BETA_KEYSTORE=$RUNNER_TEMP/globalcall-beta.jks" >> "$GITHUB_ENV"
+          echo "GLOBALCALL_BETA_STORE_PASSWORD=guidebeta2026" >> "$GITHUB_ENV"
+          echo "GLOBALCALL_BETA_KEY_ALIAS=guidebeta" >> "$GITHUB_ENV"
+          echo "GLOBALCALL_BETA_KEY_PASSWORD=guidebeta2026" >> "$GITHUB_ENV"
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
+
+      - name: Verify signing fingerprints
+        shell: bash
+        run: |
+          keytool -list -v \
+            -keystore "$GLOBALCALL_BETA_KEYSTORE" \
+            -alias "$GLOBALCALL_BETA_KEY_ALIAS" \
+            -storepass "$GLOBALCALL_BETA_STORE_PASSWORD" \
+            -keypass "$GLOBALCALL_BETA_KEY_PASSWORD" | grep -E 'SHA1:|SHA256:'
+
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - name: Build optimized debug APKs
+
+      - name: Build Firebase-ready optimized APKs
         run: gradle --no-daemon assembleDebug
+
       - name: List APK sizes
         run: ls -lh app/build/outputs/apk/debug/*.apk
+
       - name: Upload optimized APKs
         uses: actions/upload-artifact@v4
         with:
-          name: globalcall-v1.0.0-stable-apks
+          name: globalcall-v1.0.1-firebase-ready-apks
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
