@@ -6,7 +6,14 @@ object PhoneDirectory {
     fun normalize(raw: String): String {
         val trimmed = raw.trim()
         require(trimmed.startsWith("+")) { "Use international format, for example +8801... or +9665..." }
-        val digits = trimmed.drop(1).filter(Char::isDigit)
+        var digits = trimmed.drop(1).filter(Char::isDigit)
+
+        // Saudi local mobile numbers are commonly written as 05XXXXXXXX.
+        // In E.164 international format the trunk 0 must be removed: +9665XXXXXXXX.
+        if (digits.startsWith("9660")) {
+            digits = "966" + digits.removePrefix("9660")
+        }
+
         require(digits.length in 8..15) { "Enter a valid phone number with country code" }
         return "+$digits"
     }
