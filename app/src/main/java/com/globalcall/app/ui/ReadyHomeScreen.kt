@@ -45,7 +45,9 @@ import com.globalcall.app.ExternalCallRequest
 import com.globalcall.app.MainActivity
 import com.globalcall.app.data.ChatRepository
 import com.globalcall.app.data.ConversationState
+import com.globalcall.app.data.DiscoveredUser
 import com.globalcall.app.data.GlobalCallRepository
+import com.globalcall.app.data.UserDiscoveryRepository
 import com.globalcall.app.model.AppUser
 import com.globalcall.app.model.CallInvite
 import com.globalcall.app.model.CallRecord
@@ -156,6 +158,7 @@ fun ReadyHomeScreen(
     val scope = rememberCoroutineScope()
     val lifecycleOwner = LocalLifecycleOwner.current
     val chatRepository = remember(auth) { ChatRepository(auth = auth) }
+    val discoveryRepository = remember(auth) { UserDiscoveryRepository(auth = auth) }
     var tab by remember { mutableIntStateOf(0) }
     var allUsers by remember { mutableStateOf<List<AppUser>>(emptyList()) }
     var myProfile by remember { mutableStateOf<AppUser?>(null) }
@@ -164,6 +167,7 @@ fun ReadyHomeScreen(
     var conversations by remember { mutableStateOf<List<ConversationState>>(emptyList()) }
     var incoming by remember { mutableStateOf<CallInvite?>(null) }
     var myCallCode by remember { mutableStateOf("") }
+    var myUsername by remember { mutableStateOf("") }
     var message by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
 
@@ -186,6 +190,9 @@ fun ReadyHomeScreen(
         runCatching { repository.ensureMyCallCode() }
             .onSuccess { myCallCode = it }
             .onFailure { message = it.message ?: "Could not activate your GlobalCall ID" }
+        runCatching { discoveryRepository.ensureMyUsername() }
+            .onSuccess { myUsername = it }
+            .onFailure { message = it.message ?: "Could not activate your username" }
         runCatching { repository.publishPhoneDirectory() }
     }
 
@@ -322,14 +329,18 @@ fun ReadyHomeScreen(
                         people = people,
                         busy = busy,
                         repository = repository,
+                        discoveryRepository = discoveryRepository,
                         onDirectCall = ::directCall,
                         onMessage = ::openChat
                     )
                     else -> ProfileTab(
                         auth = auth,
                         repository = repository,
+                        discoveryRepository = discoveryRepository,
                         profile = myProfile,
                         callCode = myCallCode,
+                        username = myUsername,
+                        onUsernameChanged = { myUsername = it },
                         onMessage = { message = it }
                     )
                 }
@@ -404,7 +415,7 @@ private fun GlobalCallTopBar(
                     }
                 ) { Icon(Icons.Default.Chat, "Chats") }
             }
-            FilledIconButton(onClick = onSearch) { Icon(Icons.Default.PersonAdd, "Connect people") }
+            FilledIconButton(onClick = onSearch) { Icon(Icons.Default.PersonSearch, "Find people") }
         }
     }
 }
@@ -457,7 +468,7 @@ private fun CallsTab(
                     ).padding(22.dp)
                 ) {
                     Text("Calls & messages. Your people.", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    Text("Connect once with a GlobalCall ID, then call or message from the same contact.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .8f))
+                    Text("Find someone by @username, GlobalCall ID or verified phone, then keep them in your contacts.", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .8f))
                     Spacer(Modifier.height(16.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -487,7 +498,7 @@ private fun CallsTab(
 
         item { Text("Recent calls", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
         if (recentCalls.isEmpty()) {
-            item { EmptyCard(Icons.Default.History, "No completed calls yet", "Connect someone with their GlobalCall ID, then start a voice/video call or message them.") }
+            item { EmptyCard(Icons.Default.History, "No completed calls yet", "Find someone in People, connect once, then start a voice/video call or message them.") }
         } else {
             items(recentCalls, key = { it.id }) { call ->
                 val peer = people.firstOrNull { it.uid == call.peerUid(currentUid) }
@@ -605,22 +616,24 @@ private fun PeopleTab(
     people: List<AppUser>,
     busy: Boolean,
     repository: GlobalCallRepository,
+    discoveryRepository: UserDiscoveryRepository,
     onDirectCall: (AppUser, Boolean) -> Unit,
     onMessage: (AppUser) -> Unit
 ) {
     val scope = rememberCoroutineScope()
-    var search by remember { mutableStateOf("") }
-    var code by remember { mutableStateOf("") }
-    var codeMessage by remember { mutableStateOf<String?>(null) }
+    var contactSearch by remember { mutableStateOf("") }
+    var discoverQuery by remember { mutableStateOf("") }
+    var discoverResult by remember { mutableStateOf<DiscoveredUser?>(null) }
+    var discoverMessage by remember { mutableStateOf<String?>(null) }
+    var discovering by remember { mutableStateOf(false) }
     var connecting by remember { mutableStateOf(false) }
-    var phone by remember { mutableStateOf("") }
-    var phoneResult by remember { mutableStateOf<AppUser?>(null) }
-    var phoneMessage by remember { mutableStateOf<String?>(null) }
-    var searchingPhone by remember { mutableStateOf(false) }
 
-    val filtered = remember(people, search) {
+    val filtered = remember(people, contactSearch) {
         people.filter {
-            search.isBlank() || it.displayName.contains(search, true) || it.callCode.contains(search, true) || it.phoneLast4.contains(search.filter(Char::isDigit))
+            contactSearch.isBlank() ||
+                it.displayName.contains(contactSearch, true) ||
+                it.callCode.contains(contactSearch, true) ||
+                it.phoneLast4.contains(contactSearch.filter(Char::isDigit))
         }
     }
 
@@ -634,22 +647,26 @@ private fun PeopleTab(
                 Column(Modifier.padding(20.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                            Icon(Icons.Default.PersonAdd, null, modifier = Modifier.padding(12.dp), tint = MaterialTheme.colorScheme.primary)
+                            Icon(Icons.Default.PersonSearch, null, modifier = Modifier.padding(12.dp), tint = MaterialTheme.colorScheme.primary)
                         }
                         Spacer(Modifier.width(12.dp))
                         Column {
-                            Text("Connect with GlobalCall ID", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                            Text("Enter their account code once. They stay in your contacts.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Find people", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                            Text("Use @username, GlobalCall ID, or a verified phone number.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     Spacer(Modifier.height(16.dp))
                     OutlinedTextField(
-                        value = code,
-                        onValueChange = { code = it.uppercase().take(20); codeMessage = null },
+                        value = discoverQuery,
+                        onValueChange = {
+                            discoverQuery = it.take(32)
+                            discoverResult = null
+                            discoverMessage = null
+                        },
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("GlobalCall ID") },
-                        placeholder = { Text("GC-1A2B-3C4D-5E6F") },
-                        leadingIcon = { Icon(Icons.Default.Tag, null) },
+                        label = { Text("Username, ID or phone") },
+                        placeholder = { Text("@rahim / GC-... / +8801...") },
+                        leadingIcon = { Icon(Icons.Default.Search, null) },
                         singleLine = true,
                         shape = RoundedCornerShape(18.dp)
                     )
@@ -657,92 +674,113 @@ private fun PeopleTab(
                     Button(
                         onClick = {
                             scope.launch {
-                                connecting = true
-                                codeMessage = null
-                                runCatching { repository.connectByCode(code) }
+                                discovering = true
+                                discoverMessage = null
+                                discoverResult = null
+                                runCatching { discoveryRepository.findUser(discoverQuery) }
                                     .onSuccess {
-                                        codeMessage = "${it.displayName.ifBlank { "GlobalCall user" }} added to your contacts"
-                                        code = ""
+                                        discoverResult = it
+                                        if (it == null) discoverMessage = "No matching GlobalCall account found"
                                     }
-                                    .onFailure { codeMessage = it.message ?: "Could not connect this account" }
-                                connecting = false
+                                    .onFailure { discoverMessage = it.message ?: "Could not search GlobalCall" }
+                                discovering = false
                             }
                         },
-                        enabled = !connecting && code.filter(Char::isLetterOrDigit).length == 14,
+                        enabled = !discovering && discoverQuery.trim().length >= 4,
                         modifier = Modifier.fillMaxWidth().height(54.dp),
                         shape = RoundedCornerShape(18.dp)
                     ) {
-                        if (connecting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                        else { Icon(Icons.Default.Link, null); Spacer(Modifier.width(8.dp)); Text("Connect account") }
-                    }
-                    codeMessage?.let { Spacer(Modifier.height(10.dp)); Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall) }
-                }
-            }
-        }
-
-        item {
-            ElevatedCard(shape = RoundedCornerShape(24.dp)) {
-                Column(Modifier.padding(18.dp)) {
-                    Text("Optional: find by verified phone", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                    Text("Phone OTP requires Firebase SMS billing. GlobalCall ID does not.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = phone,
-                        onValueChange = { phone = it.take(18); phoneResult = null; phoneMessage = null },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Phone number") },
-                        placeholder = { Text("+8801... / +9665...") },
-                        leadingIcon = { Icon(Icons.Default.Phone, null) },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                        singleLine = true,
-                        shape = RoundedCornerShape(18.dp)
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                searchingPhone = true
-                                phoneMessage = null
-                                runCatching { repository.findUserByPhone(phone) }
-                                    .onSuccess {
-                                        phoneResult = it
-                                        if (it == null) phoneMessage = "No verified GlobalCall user found"
-                                    }
-                                    .onFailure { phoneMessage = it.message ?: "Could not search this number" }
-                                searchingPhone = false
-                            }
-                        },
-                        enabled = !searchingPhone && phone.trim().startsWith("+") && phone.filter(Char::isDigit).length >= 8,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (searchingPhone) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else { Icon(Icons.Default.PersonSearch, null); Spacer(Modifier.width(8.dp)); Text("Find verified account") }
-                    }
-                    phoneMessage?.let { Spacer(Modifier.height(8.dp)); Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                }
-            }
-        }
-
-        phoneResult?.let { result ->
-            item {
-                ElevatedCard(shape = RoundedCornerShape(22.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        AvatarImage(result.photoData, result.displayName, 52.dp)
-                        Spacer(Modifier.width(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(result.displayName.ifBlank { "GlobalCall user" }, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                            Text(if (result.callCode.isNotBlank()) result.callCode else "Open GlobalCall on the other account to activate its ID", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (discovering) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                        else {
+                            Icon(Icons.Default.Search, null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Search GlobalCall")
                         }
-                        if (result.callCode.isNotBlank()) {
-                            FilledIconButton(onClick = {
-                                scope.launch {
-                                    connecting = true
-                                    runCatching { repository.connectByCode(result.callCode) }
-                                        .onSuccess { phoneMessage = "Account connected"; phoneResult = null }
-                                        .onFailure { phoneMessage = it.message ?: "Could not connect" }
-                                    connecting = false
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Phone lookup works only for accounts with a verified phone number. @username and GlobalCall ID do not need SMS billing.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    discoverMessage?.let {
+                        Spacer(Modifier.height(10.dp))
+                        Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
+
+        discoverResult?.let { found ->
+            item {
+                val person = found.user
+                val alreadyConnected = people.any { it.uid == person.uid }
+                val onAnotherCall = person.callState in setOf("active", "calling", "ringing")
+                ElevatedCard(shape = RoundedCornerShape(24.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            AvatarImage(person.photoData, person.displayName, 58.dp)
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(person.displayName.ifBlank { "GlobalCall user" }, fontWeight = FontWeight.ExtraBold)
+                                Text(
+                                    when {
+                                        found.username.isNotBlank() -> "@${found.username}"
+                                        person.callCode.isNotBlank() -> person.callCode
+                                        else -> "GlobalCall account"
+                                    },
+                                    color = MaterialTheme.colorScheme.primary,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    when {
+                                        onAnotherCall -> "On another call"
+                                        person.online -> "Online"
+                                        else -> "Offline"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(14.dp))
+                        if (alreadyConnected) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilledTonalButton(onClick = { onMessage(person) }, modifier = Modifier.weight(1f)) {
+                                    Icon(Icons.Default.Chat, null)
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("Message")
                                 }
-                            }, enabled = !connecting) { Icon(Icons.Default.PersonAdd, "Add to contacts") }
+                                FilledIconButton(
+                                    enabled = person.online && !busy && !onAnotherCall,
+                                    onClick = { onDirectCall(person, false) }
+                                ) { Icon(Icons.Default.Call, "Voice call") }
+                                FilledIconButton(
+                                    enabled = person.online && !busy && !onAnotherCall,
+                                    onClick = { onDirectCall(person, true) }
+                                ) { Icon(Icons.Default.Videocam, "Video call") }
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    scope.launch {
+                                        connecting = true
+                                        runCatching { discoveryRepository.connect(person) }
+                                            .onSuccess { discoverMessage = "${person.displayName.ifBlank { "GlobalCall user" }} added to your contacts" }
+                                            .onFailure { discoverMessage = it.message ?: "Could not add this account" }
+                                        connecting = false
+                                    }
+                                },
+                                enabled = !connecting,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                if (connecting) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                else {
+                                    Icon(Icons.Default.PersonAdd, null)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Add contact")
+                                }
+                            }
                         }
                     }
                 }
@@ -751,8 +789,8 @@ private fun PeopleTab(
 
         item {
             OutlinedTextField(
-                value = search,
-                onValueChange = { search = it },
+                value = contactSearch,
+                onValueChange = { contactSearch = it },
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = { Text("Search your contacts") },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
@@ -762,7 +800,7 @@ private fun PeopleTab(
         }
         item { Text("Your contacts", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface) }
         if (filtered.isEmpty()) {
-            item { EmptyCard(Icons.Default.Groups, "No contacts yet", "Ask another GlobalCall user for the ID shown on their Profile screen.") }
+            item { EmptyCard(Icons.Default.Groups, "No contacts yet", "Search an @username, GlobalCall ID, or verified phone number above.") }
         } else {
             items(filtered, key = { it.uid }) { person ->
                 val onAnotherCall = person.callState in setOf("active", "calling", "ringing")
@@ -837,8 +875,11 @@ private fun EmptyCard(icon: androidx.compose.ui.graphics.vector.ImageVector, tit
 private fun ProfileTab(
     auth: FirebaseAuth,
     repository: GlobalCallRepository,
+    discoveryRepository: UserDiscoveryRepository,
     profile: AppUser?,
     callCode: String,
+    username: String,
+    onUsernameChanged: (String) -> Unit,
     onMessage: (String) -> Unit
 ) {
     val user = auth.currentUser ?: return
@@ -849,6 +890,24 @@ private fun ProfileTab(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var savingPhoto by remember { mutableStateOf(false) }
+    var usernameDraft by remember(username) { mutableStateOf(username) }
+    var savingUsername by remember { mutableStateOf(false) }
+
+    fun shareProfile() {
+        if (username.isBlank() && callCode.isBlank()) return
+        val text = buildString {
+            append("Find me on GlobalCall")
+            if (username.isNotBlank()) append(": @$username")
+            if (callCode.isNotBlank()) append("\nBackup GlobalCall ID: $callCode")
+            append("\nOpen GlobalCall → People and search this username or ID.")
+        }
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "My GlobalCall profile")
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "Share GlobalCall profile"))
+    }
 
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -915,6 +974,68 @@ private fun ProfileTab(
             }
         }
         item {
+            ElevatedCard(shape = RoundedCornerShape(28.dp)) {
+                Column(Modifier.fillMaxWidth().padding(20.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.AlternateEmail, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column {
+                            Text("Your GlobalCall username", fontWeight = FontWeight.ExtraBold)
+                            Text("People can find you without typing the long GlobalCall ID.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    OutlinedTextField(
+                        value = usernameDraft,
+                        onValueChange = { usernameDraft = it.removePrefix("@").take(24) },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Username") },
+                        prefix = { Text("@") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(18.dp)
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    savingUsername = true
+                                    runCatching { discoveryRepository.updateMyUsername(usernameDraft) }
+                                        .onSuccess {
+                                            usernameDraft = it
+                                            onUsernameChanged(it)
+                                            onMessage("Username saved as @$it")
+                                        }
+                                        .onFailure { onMessage(it.message ?: "Could not save username") }
+                                    savingUsername = false
+                                }
+                            },
+                            enabled = !savingUsername && usernameDraft.length >= 4,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            if (savingUsername) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Icon(Icons.Default.Check, null)
+                            Spacer(Modifier.width(7.dp))
+                            Text("Save")
+                        }
+                        OutlinedButton(
+                            onClick = ::shareProfile,
+                            enabled = username.isNotBlank() || callCode.isNotBlank(),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Share, null)
+                            Spacer(Modifier.width(7.dp))
+                            Text("Share")
+                        }
+                    }
+                    if (username.isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text("Your easy address: @$username", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+        item {
             Card(
                 shape = RoundedCornerShape(28.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
@@ -923,12 +1044,12 @@ private fun ProfileTab(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Badge, null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
                         Spacer(Modifier.width(10.dp))
-                        Text("Your GlobalCall ID", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                        Text("Backup GlobalCall ID", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     }
                     Spacer(Modifier.height(12.dp))
                     Text(callCode.ifBlank { "Activating…" }, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
                     Spacer(Modifier.height(6.dp))
-                    Text("Share this ID. Another user enters it once to add your account, message you, and call you.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .78f))
+                    Text("This permanent ID still works if you do not know someone's username.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = .78f))
                     Spacer(Modifier.height(14.dp))
                     Button(
                         enabled = callCode.isNotBlank(),
@@ -950,8 +1071,8 @@ private fun ProfileTab(
                     Icon(Icons.Default.VerifiedUser, null)
                     Spacer(Modifier.width(12.dp))
                     Column {
-                        Text("Calls & messaging are active", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                        Text("GlobalCall ID calling and internet messages work without carrier SMS billing.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Easy discovery is active", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                        Text("Friends can search your @username without SMS. Verified phone lookup remains available when phone verification exists.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
