@@ -15,6 +15,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
+import com.globalcall.app.ChatActivity
 import com.globalcall.app.MainActivity
 import com.globalcall.app.data.GlobalCallRepository
 import com.google.firebase.FirebaseApp
@@ -48,19 +49,57 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         if (firebaseAppOrNull(this) == null) return
-
         val data = message.data
-        if (data["type"] != "incoming_call") return
+        when (data["type"]) {
+            "incoming_call" -> {
+                val callId = data["callId"].orEmpty()
+                if (callId.isBlank()) return
+                showIncomingCall(
+                    callId = callId,
+                    callerName = data["callerName"].orEmpty().ifBlank { "GlobalCall user" },
+                    callerUid = data["callerUid"].orEmpty(),
+                    video = data["video"] != "false"
+                )
+            }
+            "chat_message" -> {
+                val senderUid = data["senderUid"].orEmpty()
+                if (senderUid.isBlank()) return
+                showChatMessage(
+                    senderUid = senderUid,
+                    senderName = data["senderName"].orEmpty().ifBlank { "GlobalCall contact" },
+                    text = data["text"].orEmpty().ifBlank { "New message" }
+                )
+            }
+        }
+    }
 
-        val callId = data["callId"].orEmpty()
-        if (callId.isBlank()) return
-
-        showIncomingCall(
-            callId = callId,
-            callerName = data["callerName"].orEmpty().ifBlank { "GlobalCall user" },
-            callerUid = data["callerUid"].orEmpty(),
-            video = data["video"] != "false"
+    private fun showChatMessage(senderUid: String, senderName: String, text: String) {
+        createMessageChannel()
+        val intent = Intent(this, ChatActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(ChatActivity.EXTRA_PEER_UID, senderUid)
+            putExtra(ChatActivity.EXTRA_PEER_NAME, senderName)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            senderUid.hashCode() xor 0x4D5347,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val notification = NotificationCompat.Builder(this, MESSAGE_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.sym_action_chat)
+            .setContentTitle(senderName)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .build()
+
+        val allowed = Build.VERSION.SDK_INT < 33 ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        if (allowed) NotificationManagerCompat.from(this).notify(senderUid.hashCode(), notification)
     }
 
     private fun showIncomingCall(
@@ -135,9 +174,22 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
 
         val allowed = Build.VERSION.SDK_INT < 33 ||
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
-        if (allowed) {
-            NotificationManagerCompat.from(this).notify(callId.hashCode(), notification)
-        }
+        if (allowed) NotificationManagerCompat.from(this).notify(callId.hashCode(), notification)
+    }
+
+    private fun createMessageChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.createNotificationChannel(
+            NotificationChannel(
+                MESSAGE_CHANNEL_ID,
+                "Messages",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                description = "GlobalCall chat messages"
+                enableVibration(true)
+            }
+        )
     }
 
     private fun createCallChannel() {
@@ -164,6 +216,7 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
 
     companion object {
         const val CALL_CHANNEL_ID = "globalcall_incoming_calls"
+        const val MESSAGE_CHANNEL_ID = "globalcall_messages"
     }
 }
 
