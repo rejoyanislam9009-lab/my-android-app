@@ -60,6 +60,7 @@ service cloud.firestore {
           && request.resource.data.senderUid == request.auth.uid
           && request.resource.data.receiverUid is string
           && request.resource.data.receiverUid != request.auth.uid
+          && request.resource.data.receiverUid in get(/databases/$(database)/documents/connections/$(connectionId)).data.participantUids
           && request.resource.data.text is string
           && request.resource.data.text.size() > 0
           && request.resource.data.text.size() <= 2000;
