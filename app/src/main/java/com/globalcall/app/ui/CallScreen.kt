@@ -55,6 +55,7 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import org.webrtc.SurfaceViewRenderer
 
 @Composable
@@ -138,8 +139,6 @@ fun CallScreen(
     }
 
     BackHandler(enabled = !instant && !finished) {
-        // Back during a real call means "minimize", not "destroy the activity".
-        // This prevents the WebRTC engine from being disposed and leaving stale busy state.
         activity?.moveTaskToBack(true)
     }
 
@@ -164,8 +163,6 @@ fun CallScreen(
         }
     }
 
-    // Firestore fallback for call waiting. This works while the current call screen is
-    // alive even before server push is deployed. FCM provides the same alert in background.
     DisposableEffect(session.callId, repository) {
         val uid = repository?.currentUid
         if (instant || repository == null || uid.isNullOrBlank()) {
