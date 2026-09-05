@@ -1,11 +1,14 @@
 package com.globalcall.app.ui
 
 import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
@@ -21,9 +24,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import com.globalcall.app.R
 import com.globalcall.app.data.PhoneDirectory
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes
+import com.google.android.gms.common.api.ApiException
 import com.google.firebase.FirebaseException
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.PhoneAuthCredential
 import com.google.firebase.auth.PhoneAuthOptions
 import com.google.firebase.auth.PhoneAuthProvider
@@ -50,6 +59,18 @@ private fun phoneAuthMessage(t: Throwable): String {
         raw.contains("NETWORK", ignoreCase = true) ->
             "Check your internet connection and try again."
         else -> raw.takeIf { it.isNotBlank() } ?: "Phone verification failed"
+    }
+}
+
+private fun googleAuthMessage(t: Throwable): String {
+    val raw = t.message.orEmpty()
+    return when {
+        raw.contains("CONFIGURATION_NOT_FOUND", ignoreCase = true) ||
+            raw.contains("provider", ignoreCase = true) && raw.contains("disabled", ignoreCase = true) ->
+            "Google sign-in is not enabled in Firebase Authentication yet. Enable the Google provider and try again."
+        raw.contains("network", ignoreCase = true) ->
+            "Check your internet connection and try Google sign-in again."
+        else -> raw.takeIf { it.isNotBlank() } ?: "Google sign-in could not be completed"
     }
 }
 
@@ -105,6 +126,48 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                     "updatedAt" to FieldValue.serverTimestamp()
                 ), SetOptions.merge()
             ).await()
+        }
+    }
+
+    val googleClient = remember(context, auth) {
+        val options = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(context.getString(R.string.default_web_client_id))
+            .requestEmail()
+            .requestProfile()
+            .build()
+        GoogleSignIn.getClient(context, options)
+    }
+
+    val googleLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.data == null) return@rememberLauncherForActivityResult
+        val account = try {
+            GoogleSignIn.getSignedInAccountFromIntent(result.data).getResult(ApiException::class.java)
+        } catch (e: ApiException) {
+            if (e.statusCode != GoogleSignInStatusCodes.SIGN_IN_CANCELLED) {
+                error = if (e.statusCode == 10) {
+                    "Google sign-in configuration does not match this app signing key. Check the Firebase OAuth client."
+                } else {
+                    "Google sign-in failed (${e.statusCode}). Please try again."
+                }
+            }
+            null
+        }
+        if (account?.idToken != null) {
+            scope.launch {
+                loading = true
+                error = null
+                info = null
+                runCatching {
+                    val credential = GoogleAuthProvider.getCredential(account.idToken, null)
+                    auth.signInWithCredential(credential).await()
+                    persistSignedInUser(null)
+                }.onSuccess {
+                    info = "Google account connected"
+                }.onFailure {
+                    error = googleAuthMessage(it)
+                }
+                loading = false
+            }
         }
     }
 
@@ -179,8 +242,38 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                 }
                 Spacer(Modifier.height(16.dp))
                 Text("GlobalCall", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("Call people by verified phone number", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(22.dp))
+                Text("Create your account and connect instantly", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(20.dp))
+
+                Button(
+                    onClick = {
+                        error = null
+                        info = null
+                        googleLauncher.launch(googleClient.signInIntent)
+                    },
+                    enabled = !loading,
+                    modifier = Modifier.fillMaxWidth().height(54.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(Icons.Default.AccountCircle, null)
+                    Spacer(Modifier.width(10.dp))
+                    Text("Continue with Google", fontWeight = FontWeight.Bold)
+                }
+                Text(
+                    "New users are registered automatically with their Google name and email.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 7.dp)
+                )
+
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    HorizontalDivider(Modifier.weight(1f))
+                    Text("  or  ", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium)
+                    HorizontalDivider(Modifier.weight(1f))
+                }
 
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
@@ -284,8 +377,14 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                     )
                 }
 
-                error?.let { Spacer(Modifier.height(10.dp)); Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
-                info?.let { Spacer(Modifier.height(10.dp)); Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall) }
+                error?.let {
+                    Spacer(Modifier.height(10.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                info?.let {
+                    Spacer(Modifier.height(10.dp))
+                    Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall)
+                }
 
                 Spacer(Modifier.height(18.dp))
                 Button(
@@ -326,11 +425,21 @@ fun AuthScreen(auth: FirebaseAuth, onGuest: () -> Unit = {}) {
                     shape = RoundedCornerShape(16.dp)
                 ) {
                     if (loading) CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
-                    else Text(if (phoneMode) if (verificationId == null) "Send OTP" else "Verify & continue" else if (createMode) "Create account" else "Sign in")
+                    else Text(
+                        if (phoneMode) {
+                            if (verificationId == null) "Send OTP" else "Verify & continue"
+                        } else if (createMode) {
+                            "Create account"
+                        } else {
+                            "Sign in"
+                        }
+                    )
                 }
 
                 if (phoneMode && verificationId != null) {
-                    TextButton(onClick = { verificationId = null; otp = ""; info = null }) { Text("Change number") }
+                    TextButton(onClick = { verificationId = null; otp = ""; info = null }) {
+                        Text("Change number")
+                    }
                 }
 
                 HorizontalDivider(Modifier.padding(vertical = 8.dp))
