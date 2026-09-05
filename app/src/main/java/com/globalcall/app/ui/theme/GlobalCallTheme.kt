@@ -1,12 +1,51 @@
 package com.globalcall.app.ui.theme
 
+import android.content.Context
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
-import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+
+enum class ThemeMode {
+    SYSTEM,
+    LIGHT,
+    DARK
+}
+
+object ThemePreferences {
+    private const val PREFS = "globalcall_ui_preferences"
+    private const val KEY_THEME_MODE = "theme_mode"
+    private var initialized = false
+
+    var mode by mutableStateOf(ThemeMode.SYSTEM)
+        private set
+
+    fun initialize(context: Context) {
+        if (initialized) return
+        val stored = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_THEME_MODE, ThemeMode.SYSTEM.name)
+        mode = runCatching { ThemeMode.valueOf(stored ?: ThemeMode.SYSTEM.name) }
+            .getOrDefault(ThemeMode.SYSTEM)
+        initialized = true
+    }
+
+    fun setMode(context: Context, newMode: ThemeMode) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_THEME_MODE, newMode.name)
+            .apply()
+        mode = newMode
+        initialized = true
+    }
+}
 
 private val LightColors = lightColorScheme(
     primary = Color(0xFF315FEA),
@@ -49,8 +88,18 @@ private val DarkColors = darkColorScheme(
 
 @Composable
 fun GlobalCallTheme(content: @Composable () -> Unit) {
+    val context = LocalContext.current.applicationContext
+    remember(context) {
+        ThemePreferences.initialize(context)
+        true
+    }
+    val useDark = when (ThemePreferences.mode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+        colorScheme = if (useDark) DarkColors else LightColors,
         typography = Typography(),
         content = content
     )
