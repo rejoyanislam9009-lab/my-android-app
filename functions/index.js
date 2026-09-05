@@ -41,6 +41,23 @@ async function sendToUser(uid, data, ttlMs = 60000) {
   }
 }
 
+function hasAnotherLiveCall(profile, incomingCallId) {
+  const state = String(profile.callState || "");
+  const currentCallId = String(profile.currentCallId || "");
+  if (!currentCallId || currentCallId === incomingCallId) return false;
+  if (!["active", "calling", "ringing"].includes(state)) return false;
+
+  const updatedAt = profile.callStateUpdatedAt;
+  const updatedMs = updatedAt && typeof updatedAt.toMillis === "function"
+    ? updatedAt.toMillis()
+    : 0;
+  if (!updatedMs) return false;
+  const ageMs = Math.max(0, Date.now() - updatedMs);
+  return state === "active"
+    ? ageMs < 6 * 60 * 60 * 1000
+    : ageMs < 2 * 60 * 1000;
+}
+
 exports.pushIncomingCall = onDocumentCreated(
   {
     document: "calls/{callId}",
@@ -58,6 +75,35 @@ exports.pushIncomingCall = onDocumentCreated(
     const callerName = String(call.callerName || "GlobalCall user");
     const callId = event.params.callId;
     if (!calleeUid || !callerUid || !callId) return;
+
+    const db = getFirestore();
+    const calleeSnapshot = await db.collection("users").doc(calleeUid).get();
+    const calleeProfile = calleeSnapshot.exists ? calleeSnapshot.data() || {} : {};
+
+    if (hasAnotherLiveCall(calleeProfile, callId)) {
+      const sent = await sendToUser(
+        calleeUid,
+        {
+          type: "call_waiting",
+          callId,
+          callerUid,
+          callerName,
+          video: String(call.video !== false),
+        },
+        30000
+      );
+
+      await snapshot.ref.set(
+        {
+          status: "busy",
+          endedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+          waitingPushSentAt: sent ? FieldValue.serverTimestamp() : null,
+        },
+        { merge: true }
+      );
+      return;
+    }
 
     const sent = await sendToUser(
       calleeUid,
@@ -97,7 +143,9 @@ exports.pushChatMessage = onDocumentCreated(
 
     const db = getFirestore();
     const sender = await db.collection("users").doc(senderUid).get();
-    const senderName = String(sender.get("displayName") || "GlobalCall contact");
+    const senderName = String(
+      sender.get("displayName") || sender.get("email") || "GlobalCall contact"
+    );
 
     await sendToUser(
       receiverUid,
