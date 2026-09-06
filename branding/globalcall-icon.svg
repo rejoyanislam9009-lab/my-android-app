@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#061426"/>
+      <stop offset="1" stop-color="#0B1F3A"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="75%" cy="18%" r="55%">
+      <stop offset="0" stop-color="#0EA5E9" stop-opacity=".42"/>
+      <stop offset="1" stop-color="#0EA5E9" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="16%" cy="82%" r="58%">
+      <stop offset="0" stop-color="#22D3EE" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#22D3EE" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="22" stdDeviation="28" flood-color="#000" flood-opacity=".32"/>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
+  <rect width="1024" height="1024" rx="228" fill="url(#glowA)"/>
+  <rect width="1024" height="1024" rx="228" fill="url(#glowB)"/>
+  <circle cx="250" cy="246" r="34" fill="#22D3EE" opacity=".95"/>
+  <g filter="url(#shadow)">
+    <rect x="220" y="290" width="528" height="460" rx="170" fill="#fff"/>
+    <path d="M730 430 882 332v360L730 594Z" fill="url(#cyan)"/>
+    <path d="M390 486c31 62 82 112 144 144l48-48c6-6 15-8 23-5 24 8 50 12 77 12 12 0 22 10 22 22v76c0 12-10 22-22 22-203 0-368-165-368-368 0-12 10-22 22-22h76c12 0 22 10 22 22 0 27 4 53 12 77 3 8 1 17-5 23l-51 45Z" fill="#0B1F3A"/>
+  </g>
+</svg>
