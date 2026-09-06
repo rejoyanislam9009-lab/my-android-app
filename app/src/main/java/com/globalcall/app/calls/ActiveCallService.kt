@@ -127,9 +127,29 @@ class ActiveCallService : Service() {
         if (heartbeatJob?.isActive == true) return
         heartbeatJob = serviceScope.launch {
             val repository = GlobalCallRepository()
+            var engineMissingSince = 0L
             while (true) {
-                runCatching { repository.setMyCallState("active", callId) }
-                delay(30_000L)
+                val hasMediaEngine = ActiveCallEngineStore.current(callId) != null
+                if (hasMediaEngine) {
+                    engineMissingSince = 0L
+                    runCatching { repository.setMyCallState("active", callId) }
+                } else {
+                    val now = System.currentTimeMillis()
+                    if (engineMissingSince == 0L) engineMissingSince = now
+                    if (now - engineMissingSince >= ENGINE_MISSING_GRACE_MS) {
+                        // A foreground notification without a live WebRTC engine is not
+                        // a real call. End it instead of refreshing a permanent busy flag.
+                        stoppingNormally = true
+                        runCatching { repository.endCall(callId) }
+                        clearState(callId)
+                        statusRegistration?.remove()
+                        statusRegistration = null
+                        ServiceCompat.stopForeground(this@ActiveCallService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                        break
+                    }
+                }
+                delay(HEARTBEAT_CHECK_MS)
             }
         }
     }
@@ -247,6 +267,8 @@ class ActiveCallService : Service() {
         private const val KEY_PEER_NAME = "peer_name"
         private const val KEY_VIDEO = "video"
         private const val KEY_CONNECTED = "connected"
+        private const val HEARTBEAT_CHECK_MS = 10_000L
+        private const val ENGINE_MISSING_GRACE_MS = 25_000L
 
         const val EXTRA_CALL_ID = "active_call_id"
         private const val EXTRA_PEER_NAME = "active_peer_name"
