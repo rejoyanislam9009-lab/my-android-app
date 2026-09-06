@@ -3,6 +3,7 @@ package com.globalcall.app.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.globalcall.app.BuildConfig
+import com.globalcall.app.calls.ActiveCallEngineStore
 import com.globalcall.app.model.AppUser
 import com.globalcall.app.model.CallInvite
 import com.globalcall.app.model.CallRecord
@@ -33,6 +34,12 @@ class GlobalCallRepository(
             Context.MODE_PRIVATE
         )
 
+    private fun notificationPrefs(ownerUid: String): SharedPreferences =
+        auth.app.applicationContext.getSharedPreferences(
+            "globalcall_contact_notifications_$ownerUid",
+            Context.MODE_PRIVATE
+        )
+
     fun getContactAlias(peerUid: String): String {
         val ownerUid = currentUid ?: return ""
         if (peerUid.isBlank() || peerUid == ownerUid) return ""
@@ -47,6 +54,31 @@ class GlobalCallRepository(
         contactPrefs(ownerUid).edit().apply {
             if (clean.isBlank()) remove(peerUid) else putString(peerUid, clean)
         }.apply()
+    }
+
+    fun isContactMuted(peerUid: String): Boolean {
+        val ownerUid = currentUid ?: return false
+        if (peerUid.isBlank() || peerUid == ownerUid) return false
+        return peerUid in notificationPrefs(ownerUid)
+            .getStringSet(KEY_MUTED_CONTACTS, emptySet())
+            .orEmpty()
+    }
+
+    fun setContactMuted(peerUid: String, muted: Boolean) {
+        val ownerUid = requireNotNull(currentUid) { "Not signed in" }
+        require(peerUid.isNotBlank() && peerUid != ownerUid) { "Invalid contact" }
+        val prefs = notificationPrefs(ownerUid)
+        val next = prefs.getStringSet(KEY_MUTED_CONTACTS, emptySet()).orEmpty().toMutableSet()
+        if (muted) next += peerUid else next -= peerUid
+        prefs.edit().putStringSet(KEY_MUTED_CONTACTS, next).apply()
+    }
+
+    fun getMutedContactUids(): Set<String> {
+        val ownerUid = currentUid ?: return emptySet()
+        return notificationPrefs(ownerUid)
+            .getStringSet(KEY_MUTED_CONTACTS, emptySet())
+            .orEmpty()
+            .toSet()
     }
 
     private fun applyContactAlias(user: AppUser): AppUser {
@@ -64,6 +96,8 @@ class GlobalCallRepository(
         val uid = doc.getString("uid") ?: doc.id
         val email = doc.getString("email").orEmpty()
         val displayName = accountDisplayName(doc.getString("displayName").orEmpty(), email)
+        val rawCallState = doc.getString("callState").orEmpty().ifBlank { "idle" }
+        val visibleCallState = if (isBusyProfile(doc)) rawCallState else "idle"
         return AppUser(
             uid = uid,
             displayName = displayName,
@@ -75,8 +109,8 @@ class GlobalCallRepository(
             callCode = doc.getString("callCode").orEmpty(),
             online = doc.getBoolean("online") ?: false,
             lastSeen = doc.getTimestamp("lastSeen"),
-            callState = doc.getString("callState").orEmpty().ifBlank { "idle" },
-            currentCallId = doc.getString("currentCallId").orEmpty()
+            callState = visibleCallState,
+            currentCallId = if (visibleCallState == "idle") "" else doc.getString("currentCallId").orEmpty()
         )
     }
 
@@ -102,14 +136,57 @@ class GlobalCallRepository(
     private fun isBusyProfile(doc: DocumentSnapshot): Boolean {
         val state = doc.getString("callState").orEmpty()
         if (state !in setOf("calling", "ringing", "active")) return false
+        if (doc.getString("currentCallId").isNullOrBlank()) return false
         val updated = doc.getTimestamp("callStateUpdatedAt")?.seconds ?: return false
         val ageSeconds = ((System.currentTimeMillis() / 1000L) - updated).coerceAtLeast(0L)
         return when (state) {
-            // ActiveCallService refreshes a real accepted call every 30 seconds.
-            // If that heartbeat disappears, do not leave the contact locked busy for hours.
-            "active" -> ageSeconds < 120L
-            else -> ageSeconds < 90L
+            // A real active call is refreshed by ActiveCallService every 30 seconds.
+            // Two missed heartbeats means the UI must stop claiming the user is busy.
+            "active" -> ageSeconds < 70L
+            else -> ageSeconds < 75L
         }
+    }
+
+    suspend fun repairMyCallState(): Boolean {
+        val uid = currentUid ?: return false
+        val userRef = db.collection("users").document(uid)
+        val profile = runCatching { userRef.get().await() }.getOrNull() ?: return false
+        val state = profile.getString("callState").orEmpty()
+        val callId = profile.getString("currentCallId").orEmpty()
+
+        if (!isBusyProfile(profile) || callId.isBlank()) {
+            clearMyCallState(callId)
+            return false
+        }
+
+        val call = runCatching { db.collection("calls").document(callId).get().await() }.getOrNull()
+        if (call == null || !call.exists()) {
+            clearMyCallState(callId)
+            return false
+        }
+
+        val status = call.getString("status").orEmpty()
+        val keep = when (state) {
+            "active" -> status == "accepted" && ActiveCallEngineStore.activeCallId() == callId
+            "calling", "ringing" -> status == "ringing"
+            else -> false
+        }
+
+        if (!keep) {
+            if (status == "accepted") {
+                runCatching {
+                    call.reference.update(
+                        mapOf(
+                            "status" to "ended",
+                            "endedAt" to FieldValue.serverTimestamp(),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
+            clearMyCallState(callId)
+        }
+        return keep
     }
 
     suspend fun ensureMyCallCode(): String {
@@ -216,46 +293,24 @@ class GlobalCallRepository(
         uid: String,
         onChange: (Set<String>) -> Unit,
         onError: (Throwable) -> Unit
-    ): ListenerRegistration {
-        var connectionPeers = emptySet<String>()
-        var conversationPeers = emptySet<String>()
-
-        fun peersFrom(snapshot: com.google.firebase.firestore.QuerySnapshot?): Set<String> =
-            snapshot?.documents.orEmpty().flatMap { doc ->
+    ): ListenerRegistration = db.collection("connections")
+        .whereArrayContains("participantUids", uid)
+        .addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                onError(error)
+                return@addSnapshotListener
+            }
+            val peers = snapshot?.documents.orEmpty().flatMap { doc ->
                 @Suppress("UNCHECKED_CAST")
                 (doc.get("participantUids") as? List<String>).orEmpty()
             }.filter { it != uid }.toSet()
-
-        fun emit() = onChange(connectionPeers + conversationPeers)
-
-        val connectionRegistration = db.collection("connections")
-            .whereArrayContains("participantUids", uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    onError(error)
-                    return@addSnapshotListener
-                }
-                connectionPeers = peersFrom(snapshot)
-                emit()
-            }
-
-        val conversationRegistration = db.collection("conversations")
-            .whereArrayContains("participantUids", uid)
-            .addSnapshotListener { snapshot, error ->
-                if (error != null) {
-                    onError(error)
-                    return@addSnapshotListener
-                }
-                conversationPeers = peersFrom(snapshot)
-                emit()
-            }
-
-        return object : ListenerRegistration {
-            override fun remove() {
-                connectionRegistration.remove()
-                conversationRegistration.remove()
-            }
+            onChange(peers)
         }
+
+    suspend fun loadUser(uid: String): AppUser? {
+        if (uid.isBlank()) return null
+        val doc = runCatching { db.collection("users").document(uid).get().await() }.getOrNull() ?: return null
+        return doc.takeIf { it.exists() }?.let(::userFrom)?.let(::applyContactAlias)
     }
 
     suspend fun findUserByCode(rawCode: String): AppUser? {
@@ -303,23 +358,18 @@ class GlobalCallRepository(
         if (uid.isBlank() || uid == currentUid) return null
         val profile = runCatching { db.collection("users").document(uid).get().await() }.getOrNull()
         val email = profile?.getString("email").orEmpty()
-        val user = AppUser(
-            uid = uid,
-            displayName = accountDisplayName(
-                profile?.getString("displayName").orEmpty().ifBlank { directory.getString("displayName").orEmpty() },
-                email
-            ),
-            email = email,
-            bio = profile?.getString("bio").orEmpty(),
-            photoUrl = profile?.getString("photoUrl") ?: directory.getString("photoUrl").orEmpty(),
-            photoData = profile?.getString("photoData") ?: directory.getString("photoData").orEmpty(),
-            phoneLast4 = directory.getString("phoneLast4").orEmpty(),
-            callCode = profile?.getString("callCode").orEmpty(),
-            online = profile?.getBoolean("online") ?: false,
-            lastSeen = profile?.getTimestamp("lastSeen"),
-            callState = profile?.getString("callState").orEmpty().ifBlank { "idle" },
-            currentCallId = profile?.getString("currentCallId").orEmpty()
-        )
+        val user = if (profile?.exists() == true) {
+            userFrom(profile)
+        } else {
+            AppUser(
+                uid = uid,
+                displayName = accountDisplayName(directory.getString("displayName").orEmpty(), email),
+                email = email,
+                photoUrl = directory.getString("photoUrl").orEmpty(),
+                photoData = directory.getString("photoData").orEmpty(),
+                phoneLast4 = directory.getString("phoneLast4").orEmpty()
+            )
+        }
         return applyContactAlias(user)
     }
 
@@ -422,6 +472,14 @@ class GlobalCallRepository(
             onChange(snapshot?.documents.orEmpty().mapNotNull { it.getString("blockedUid") }.toSet())
         }
 
+    suspend fun isBlockedByMe(peerUid: String): Boolean {
+        val uid = currentUid ?: return false
+        if (peerUid.isBlank()) return false
+        return runCatching {
+            db.collection("blocks").document("${uid}_$peerUid").get().await().exists()
+        }.getOrDefault(false)
+    }
+
     suspend fun startCall(peer: AppUser, video: Boolean): CallSession {
         val user = requireNotNull(auth.currentUser) { "Not signed in" }
         require(peer.uid.isNotBlank()) { "Missing contact" }
@@ -430,19 +488,16 @@ class GlobalCallRepository(
 
         val livePeer = db.collection("users").document(peer.uid).get().await()
         require(livePeer.exists()) { "This GlobalCall account is unavailable" }
-        require(livePeer.getBoolean("online") == true) { "This contact is offline right now" }
         require(!isBusyProfile(livePeer)) { "This contact is already on another call" }
 
+        runCatching { repairMyCallState() }
         val myProfile = db.collection("users").document(user.uid).get().await()
         require(!isBusyProfile(myProfile)) { "You already have another call in progress" }
 
         val blockedByMe = runCatching {
             db.collection("blocks").document("${user.uid}_${peer.uid}").get().await().exists()
         }.getOrDefault(false)
-        val blockedByPeer = runCatching {
-            db.collection("blocks").document("${peer.uid}_${user.uid}").get().await().exists()
-        }.getOrDefault(false)
-        require(!blockedByMe && !blockedByPeer) { "Calling is unavailable for this contact" }
+        require(!blockedByMe) { "Unblock this contact before calling" }
 
         val callRef = db.collection("calls").document()
         val roomName = "GlobalCall-${callRef.id}"
@@ -486,6 +541,18 @@ class GlobalCallRepository(
 
     suspend fun acceptCall(invite: CallInvite): CallSession {
         val uid = requireNotNull(currentUid) { "Not signed in" }
+        if (isBlockedByMe(invite.callerUid)) {
+            db.collection("calls").document(invite.id).update(
+                mapOf(
+                    "status" to "declined",
+                    "endedAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+            error("This contact is blocked")
+        }
+
+        runCatching { repairMyCallState() }
         val me = db.collection("users").document(uid).get().await()
         if (isBusyProfile(me) && me.getString("currentCallId").orEmpty() != invite.id) {
             db.collection("calls").document(invite.id).update(
@@ -676,6 +743,7 @@ class GlobalCallRepository(
             return
         }
 
+        runCatching { repairMyCallState() }
         val phone = user.phoneNumber
         val code = runCatching { ensureMyCallCode() }.getOrDefault("")
         val existing = runCatching { userRef.get().await() }.getOrNull()
@@ -692,7 +760,7 @@ class GlobalCallRepository(
         )
         if (code.isNotBlank()) data["callCode"] = code
         if (existing != null && isBusyProfile(existing)) {
-            // Keep a live, recently-heartbeating call state intact across activity recreation.
+            // repairMyCallState verified the live call before we preserve this state.
         } else {
             data["callState"] = "idle"
             data["currentCallId"] = ""
@@ -700,6 +768,14 @@ class GlobalCallRepository(
         }
         userRef.set(data, SetOptions.merge()).await()
         runCatching { publishPhoneDirectory() }
+    }
+
+    suspend fun deleteContact(peerUid: String) {
+        val uid = requireNotNull(currentUid) { "Not signed in" }
+        require(peerUid.isNotBlank() && peerUid != uid) { "Invalid contact" }
+        db.collection("connections").document(connectionId(uid, peerUid)).delete().await()
+        setContactAlias(peerUid, "")
+        setContactMuted(peerUid, false)
     }
 
     suspend fun blockUser(peerUid: String) {
@@ -712,6 +788,7 @@ class GlobalCallRepository(
                 "createdAt" to FieldValue.serverTimestamp()
             )
         ).await()
+        setContactMuted(peerUid, true)
     }
 
     suspend fun unblockUser(peerUid: String) {
@@ -730,5 +807,9 @@ class GlobalCallRepository(
                 "status" to "open"
             )
         ).await()
+    }
+
+    companion object {
+        private const val KEY_MUTED_CONTACTS = "muted_contact_uids"
     }
 }
