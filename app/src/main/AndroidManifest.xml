@@ -32,6 +32,10 @@
         tools:replace="android:allowBackup">
 
         <activity
+            android:name=".PrivacySettingsActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ChatActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
