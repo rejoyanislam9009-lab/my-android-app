@@ -13,11 +13,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Videocam
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -126,9 +122,13 @@ private fun ChatScreen(
     var info by remember { mutableStateOf<String?>(null) }
     var showMoreMenu by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var showBlockDialog by remember { mutableStateOf(false) }
     var renameDraft by remember(peerUid) { mutableStateOf(peerName) }
+    var blockedByMe by remember(peerUid) { mutableStateOf(false) }
+    var muted by remember(peerUid) { mutableStateOf(callRepository.isContactMuted(peerUid)) }
 
-    DisposableEffect(peerUid) {
+    DisposableEffect(peerUid, myUid) {
         val messageRegistration = repository.observeMessages(
             peerUid = peerUid,
             onChange = { messages = it; error = null },
@@ -154,10 +154,16 @@ private fun ChatScreen(
                     peerName = callRepository.getContactAlias(peerUid).ifBlank { officialName }
                 }
             }
+        val blockRegistration = if (myUid.isNotBlank()) {
+            callRepository.observeBlockedUsers(myUid) { blocked ->
+                blockedByMe = peerUid in blocked
+            }
+        } else null
         onDispose {
             messageRegistration.remove()
             conversationRegistration.remove()
             peerRegistration.remove()
+            blockRegistration?.remove()
             scope.launch { runCatching { repository.setTyping(peerUid, false) } }
         }
     }
@@ -171,25 +177,24 @@ private fun ChatScreen(
         }
     }
 
-    // Do not key this effect on every character. The previous implementation
-    // restarted its delay on every key press, so fast typing could remain invisible.
-    LaunchedEffect(peerUid, draft.isBlank()) {
-        if (draft.isBlank()) {
+    LaunchedEffect(peerUid, draft.isBlank(), blockedByMe) {
+        if (draft.isBlank() || blockedByMe) {
             runCatching { repository.setTyping(peerUid, false) }
         } else {
-            while (draft.isNotBlank()) {
+            while (draft.isNotBlank() && !blockedByMe) {
                 runCatching { repository.setTyping(peerUid, true) }
                 delay(2_500L)
             }
         }
     }
 
-    val peerTyping = conversation?.let { state ->
+    val peerTyping = !blockedByMe && conversation?.let { state ->
         val age = state.typingAt?.let { (System.currentTimeMillis() / 1000L) - it.seconds } ?: Long.MAX_VALUE
         state.typingUid == peerUid && age in 0..10
     } == true
 
     val subtitle = when {
+        blockedByMe -> "Blocked"
         peerTyping -> "typing…"
         peerOnline -> "Online"
         peerLastSeen != null -> "Last seen ${formatLastSeen(peerLastSeen!!)}"
@@ -197,6 +202,10 @@ private fun ChatScreen(
     }
 
     fun startCall(video: Boolean) {
+        if (blockedByMe) {
+            error = "Unblock this contact before calling"
+            return
+        }
         val peer = AppUser(
             uid = peerUid,
             displayName = peerName,
@@ -261,6 +270,52 @@ private fun ChatScreen(
         )
     }
 
+    if (showBlockDialog) {
+        AlertDialog(
+            onDismissRequest = { showBlockDialog = false },
+            icon = { Icon(Icons.Default.Block, null) },
+            title = { Text("Block $peerName?") },
+            text = { Text("They will not be able to start a new GlobalCall message or call with you while blocked.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showBlockDialog = false
+                    scope.launch {
+                        runCatching { callRepository.blockUser(peerUid) }
+                            .onSuccess {
+                                blockedByMe = true
+                                muted = true
+                                draft = ""
+                                info = "$peerName blocked"
+                                error = null
+                            }
+                            .onFailure { error = it.message ?: "Could not block contact" }
+                    }
+                }) { Text("Block") }
+            },
+            dismissButton = { TextButton(onClick = { showBlockDialog = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (showDeleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            icon = { Icon(Icons.Default.DeleteOutline, null) },
+            title = { Text("Delete contact?") },
+            text = { Text("$peerName will be removed from your GlobalCall contacts. You can find and add the account again later.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteDialog = false
+                    scope.launch {
+                        runCatching { callRepository.deleteContact(peerUid) }
+                            .onSuccess { onBack() }
+                            .onFailure { error = it.message ?: "Could not delete contact" }
+                    }
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") } }
+        )
+    }
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -273,7 +328,11 @@ private fun ChatScreen(
                             Text(
                                 subtitle,
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (peerTyping || peerOnline) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                color = when {
+                                    blockedByMe -> MaterialTheme.colorScheme.error
+                                    peerTyping || peerOnline -> MaterialTheme.colorScheme.primary
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
                         }
                     }
@@ -282,10 +341,10 @@ private fun ChatScreen(
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
                 },
                 actions = {
-                    IconButton(onClick = { startCall(false) }) {
+                    IconButton(enabled = !blockedByMe, onClick = { startCall(false) }) {
                         Icon(Icons.Default.Call, "Voice call")
                     }
-                    IconButton(onClick = { startCall(true) }) {
+                    IconButton(enabled = !blockedByMe, onClick = { startCall(true) }) {
                         Icon(Icons.Default.Videocam, "Video call")
                     }
                     Box {
@@ -297,6 +356,7 @@ private fun ChatScreen(
                             onDismissRequest = { showMoreMenu = false }
                         ) {
                             DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Default.Edit, null) },
                                 text = { Text("Rename contact") },
                                 onClick = {
                                     renameDraft = peerName
@@ -315,6 +375,45 @@ private fun ChatScreen(
                                     }
                                 )
                             }
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(if (muted) Icons.Default.Notifications else Icons.Default.NotificationsOff, null) },
+                                text = { Text(if (muted) "Unmute notifications" else "Mute notifications") },
+                                onClick = {
+                                    muted = !muted
+                                    callRepository.setContactMuted(peerUid, muted)
+                                    info = if (muted) "Message notifications muted" else "Message notifications unmuted"
+                                    showMoreMenu = false
+                                }
+                            )
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(if (blockedByMe) Icons.Default.LockOpen else Icons.Default.Block, null) },
+                                text = { Text(if (blockedByMe) "Unblock contact" else "Block contact") },
+                                onClick = {
+                                    showMoreMenu = false
+                                    if (blockedByMe) {
+                                        scope.launch {
+                                            runCatching { callRepository.unblockUser(peerUid) }
+                                                .onSuccess {
+                                                    blockedByMe = false
+                                                    info = "$peerName unblocked"
+                                                    error = null
+                                                }
+                                                .onFailure { error = it.message ?: "Could not unblock contact" }
+                                        }
+                                    } else {
+                                        showBlockDialog = true
+                                    }
+                                }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                leadingIcon = { Icon(Icons.Default.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
+                                text = { Text("Delete contact", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showMoreMenu = false
+                                    showDeleteDialog = true
+                                }
+                            )
                         }
                     }
                 }
@@ -327,6 +426,32 @@ private fun ChatScreen(
                 .padding(padding)
                 .imePadding()
         ) {
+            if (blockedByMe) {
+                Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Block, null, tint = MaterialTheme.colorScheme.onErrorContainer)
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "You blocked $peerName. Unblock to message or call.",
+                            modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching { callRepository.unblockUser(peerUid) }
+                                    .onSuccess { blockedByMe = false; info = "$peerName unblocked" }
+                                    .onFailure { error = it.message ?: "Could not unblock contact" }
+                            }
+                        }) { Text("Unblock") }
+                    }
+                }
+            }
+
             LazyColumn(
                 state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
@@ -391,16 +516,17 @@ private fun ChatScreen(
                 ) {
                     OutlinedTextField(
                         value = draft,
+                        enabled = !blockedByMe,
                         onValueChange = { if (it.length <= 2000) draft = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("Message $peerName") },
+                        placeholder = { Text(if (blockedByMe) "Unblock to send messages" else "Message $peerName") },
                         minLines = 1,
                         maxLines = 5,
                         shape = RoundedCornerShape(24.dp)
                     )
                     Spacer(Modifier.width(8.dp))
                     FilledIconButton(
-                        enabled = draft.isNotBlank() && !sending,
+                        enabled = !blockedByMe && draft.isNotBlank() && !sending,
                         onClick = {
                             val text = draft
                             scope.launch {
