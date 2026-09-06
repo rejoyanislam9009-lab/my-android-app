@@ -41,7 +41,13 @@ async function sendToUser(uid, data, ttlMs = 60000) {
   }
 }
 
-function hasAnotherLiveCall(profile, incomingCallId) {
+async function isBlocked(db, blockerUid, blockedUid) {
+  if (!blockerUid || !blockedUid) return false;
+  const block = await db.collection("blocks").doc(`${blockerUid}_${blockedUid}`).get();
+  return block.exists;
+}
+
+async function hasAnotherLiveCall(db, profile, incomingCallId) {
   const state = String(profile.callState || "");
   const currentCallId = String(profile.currentCallId || "");
   if (!currentCallId || currentCallId === incomingCallId) return false;
@@ -53,12 +59,15 @@ function hasAnotherLiveCall(profile, incomingCallId) {
     : 0;
   if (!updatedMs) return false;
   const ageMs = Math.max(0, Date.now() - updatedMs);
+  const fresh = state === "active"
+    ? ageMs < 70 * 1000
+    : ageMs < 75 * 1000;
+  if (!fresh) return false;
 
-  // The Android ActiveCallService refreshes accepted calls every 30 seconds.
-  // A missing heartbeat must not leave someone "busy" for hours after a crash.
-  return state === "active"
-    ? ageMs < 120 * 1000
-    : ageMs < 90 * 1000;
+  const currentCall = await db.collection("calls").doc(currentCallId).get();
+  if (!currentCall.exists) return false;
+  const status = String(currentCall.get("status") || "");
+  return status === "ringing" || status === "accepted";
 }
 
 exports.pushIncomingCall = onDocumentCreated(
@@ -80,10 +89,24 @@ exports.pushIncomingCall = onDocumentCreated(
     if (!calleeUid || !callerUid || !callId) return;
 
     const db = getFirestore();
+
+    if (await isBlocked(db, calleeUid, callerUid)) {
+      await snapshot.ref.set(
+        {
+          status: "declined",
+          endedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+          blockedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+      return;
+    }
+
     const calleeSnapshot = await db.collection("users").doc(calleeUid).get();
     const calleeProfile = calleeSnapshot.exists ? calleeSnapshot.data() || {} : {};
 
-    if (hasAnotherLiveCall(calleeProfile, callId)) {
+    if (await hasAnotherLiveCall(db, calleeProfile, callId)) {
       const sent = await sendToUser(
         calleeUid,
         {
@@ -147,16 +170,31 @@ exports.pushChatMessage = onDocumentCreated(
     if (!senderUid || !receiverUid || !text) return;
 
     const db = getFirestore();
-    const sender = await db.collection("users").doc(senderUid).get();
-    const senderName = String(
-      sender.get("displayName") || sender.get("email") || "GlobalCall contact"
-    );
+    const conversationId = event.params.conversationId;
+    const connection = await db.collection("connections").doc(conversationId).get();
+    if (!connection.exists) return;
+    const participants = Array.isArray(connection.get("participantUids"))
+      ? connection.get("participantUids")
+      : [];
+    if (!participants.includes(senderUid) || !participants.includes(receiverUid)) return;
 
-    await sendToUser(
+    if (
+      await isBlocked(db, receiverUid, senderUid) ||
+      await isBlocked(db, senderUid, receiverUid)
+    ) {
+      return;
+    }
+
+    const sender = await db.collection("users").doc(senderUid).get();
+    const senderDisplay = String(sender.get("displayName") || "").trim();
+    const senderEmail = String(sender.get("email") || "");
+    const senderName = senderDisplay || senderEmail.split("@")[0] || "GlobalCall contact";
+
+    const sent = await sendToUser(
       receiverUid,
       {
         type: "chat_message",
-        conversationId: event.params.conversationId,
+        conversationId,
         messageId: event.params.messageId,
         senderUid,
         senderName,
@@ -164,6 +202,13 @@ exports.pushChatMessage = onDocumentCreated(
       },
       24 * 60 * 60 * 1000
     );
+
+    if (sent) {
+      await snapshot.ref.set(
+        { pushSentAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+    }
   }
 );
 
