@@ -197,6 +197,7 @@ exports.pushChatMessage = onDocumentCreated(
         conversationId,
         messageId: event.params.messageId,
         senderUid,
+        receiverUid,
         senderName,
         text,
       },
