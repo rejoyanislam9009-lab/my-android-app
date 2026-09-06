@@ -347,6 +347,24 @@ private fun ChatScreen(
                     IconButton(enabled = !blockedByMe, onClick = { startCall(true) }) {
                         Icon(Icons.Default.Videocam, "Video call")
                     }
+                    IconButton(
+                        onClick = {
+                            if (blockedByMe) {
+                                scope.launch {
+                                    runCatching { callRepository.unblockUser(peerUid) }
+                                        .onSuccess { blockedByMe = false; info = "$peerName unblocked"; error = null }
+                                        .onFailure { error = it.message ?: "Could not unblock contact" }
+                                }
+                            } else {
+                                showBlockDialog = true
+                            }
+                        }
+                    ) {
+                        Icon(
+                            if (blockedByMe) Icons.Default.LockOpen else Icons.Default.Block,
+                            if (blockedByMe) "Unblock contact" else "Block contact"
+                        )
+                    }
                     Box {
                         IconButton(onClick = { showMoreMenu = true }) {
                             Icon(Icons.Default.MoreVert, "Contact options")
@@ -426,6 +444,39 @@ private fun ChatScreen(
                 .padding(padding)
                 .imePadding()
         ) {
+            if (!blockedByMe) {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Contact controls",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextButton(onClick = {
+                            muted = !muted
+                            callRepository.setContactMuted(peerUid, muted)
+                            info = if (muted) "Message notifications muted" else "Message notifications unmuted"
+                        }) {
+                            Icon(
+                                if (muted) Icons.Default.Notifications else Icons.Default.NotificationsOff,
+                                null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (muted) "Unmute" else "Mute")
+                        }
+                        TextButton(onClick = { showBlockDialog = true }) {
+                            Icon(Icons.Default.Block, null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Block")
+                        }
+                    }
+                }
+            }
             if (blockedByMe) {
                 Surface(color = MaterialTheme.colorScheme.errorContainer) {
                     Row(
@@ -534,7 +585,7 @@ private fun ChatScreen(
                                 runCatching { repository.setTyping(peerUid, false) }
                                 runCatching { repository.sendMessage(peerUid, text) }
                                     .onSuccess { draft = ""; error = null }
-                                    .onFailure { error = it.message ?: "Could not send message" }
+                                    .onFailure { error = friendlyChatError(it) }
                                 sending = false
                             }
                         },
@@ -545,6 +596,19 @@ private fun ChatScreen(
                 }
             }
         }
+    }
+}
+
+private fun friendlyChatError(throwable: Throwable): String {
+    val raw = throwable.message.orEmpty()
+    return when {
+        raw.contains("PERMISSION_DENIED", ignoreCase = true) ||
+            raw.contains("insufficient permissions", ignoreCase = true) ->
+            "Messaging access is not synced with Firebase yet. Publish the latest GlobalCall Firestore rules, then try again."
+        raw.contains("network", ignoreCase = true) || raw.contains("unavailable", ignoreCase = true) ->
+            "Message could not reach GlobalCall. Check internet and try again."
+        raw.isNotBlank() -> raw
+        else -> "Could not send message"
     }
 }
 

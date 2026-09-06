@@ -138,31 +138,41 @@ class ChatRepository(
         val participants = listOf(uid, peerUid).sorted()
         val conversation = db.collection("conversations").document(id)
         val message = conversation.collection("messages").document()
-        val batch = db.batch()
 
-        batch.set(
-            conversation,
-            mapOf(
-                "participantUids" to participants,
-                "lastMessage" to clean.take(180),
-                "lastSenderUid" to uid,
-                "unreadFor" to listOf(peerUid),
-                "typingUid" to "",
-                "typingAt" to FieldValue.serverTimestamp(),
-                "updatedAt" to FieldValue.serverTimestamp()
-            ),
-            SetOptions.merge()
-        )
-        batch.set(
-            message,
+        // Keep the security-critical message write separate from optional UI metadata.
+        // Older deployed rules may reject typing/unread metadata even though the message
+        // itself is allowed. A metadata rejection must not roll back a valid message.
+        val conversationSnapshot = conversation.get().await()
+        if (!conversationSnapshot.exists()) {
+            conversation.set(
+                mapOf("participantUids" to participants),
+                SetOptions.merge()
+            ).await()
+        }
+
+        message.set(
             mapOf(
                 "senderUid" to uid,
                 "receiverUid" to peerUid,
                 "text" to clean,
                 "createdAt" to FieldValue.serverTimestamp()
             )
-        )
-        batch.commit().await()
+        ).await()
+
+        runCatching {
+            conversation.set(
+                mapOf(
+                    "participantUids" to participants,
+                    "lastMessage" to clean.take(180),
+                    "lastSenderUid" to uid,
+                    "unreadFor" to listOf(peerUid),
+                    "typingUid" to "",
+                    "typingAt" to FieldValue.serverTimestamp(),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                ),
+                SetOptions.merge()
+            ).await()
+        }
     }
 
     suspend fun markRead(peerUid: String) {

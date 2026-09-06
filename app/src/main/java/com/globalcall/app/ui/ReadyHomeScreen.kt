@@ -43,6 +43,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.globalcall.app.ChatActivity
 import com.globalcall.app.ExternalCallRequest
 import com.globalcall.app.MainActivity
+import com.globalcall.app.PrivacySettingsActivity
+import com.globalcall.app.BuildConfig
 import com.globalcall.app.data.ChatRepository
 import com.globalcall.app.data.ConversationState
 import com.globalcall.app.data.DiscoveredUser
@@ -52,6 +54,8 @@ import com.globalcall.app.model.AppUser
 import com.globalcall.app.model.CallInvite
 import com.globalcall.app.model.CallRecord
 import com.globalcall.app.model.CallSession
+import com.globalcall.app.ui.theme.ThemeMode
+import com.globalcall.app.ui.theme.ThemePreferences
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.Dispatchers
@@ -338,7 +342,7 @@ fun ReadyHomeScreen(
                         onDirectCall = ::directCall,
                         onMessage = ::openChat
                     )
-                    else -> ProfileTab(
+                    3 -> ProfileTab(
                         auth = auth,
                         repository = repository,
                         discoveryRepository = discoveryRepository,
@@ -346,6 +350,11 @@ fun ReadyHomeScreen(
                         callCode = myCallCode,
                         username = myUsername,
                         onUsernameChanged = { myUsername = it },
+                        onMessage = { message = it }
+                    )
+                    else -> SettingsTab(
+                        auth = auth,
+                        repository = repository,
                         onMessage = { message = it }
                     )
                 }
@@ -441,6 +450,7 @@ private fun GlobalCallBottomBar(selected: Int, unreadChats: Int, onSelected: (In
         )
         NavigationBarItem(selected == 2, { onSelected(2) }, { Icon(Icons.Default.Groups, null) }, label = { Text("People") })
         NavigationBarItem(selected == 3, { onSelected(3) }, { Icon(Icons.Default.AccountCircle, null) }, label = { Text("Profile") })
+        NavigationBarItem(selected == 4, { onSelected(4) }, { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
     }
 }
 
@@ -1091,6 +1101,152 @@ private fun ProfileTab(
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(52.dp)
+            ) {
+                Icon(Icons.Default.Logout, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Sign out")
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsTab(
+    auth: FirebaseAuth,
+    repository: GlobalCallRepository,
+    onMessage: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        item {
+            Text("Settings", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+            Text(
+                "Privacy, notifications, appearance and call health",
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            ElevatedCard(
+                onClick = { context.startActivity(Intent(context, PrivacySettingsActivity::class.java)) },
+                shape = RoundedCornerShape(22.dp)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(18.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Security, null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Privacy & blocked users", fontWeight = FontWeight.Bold)
+                        Text("Unblock users and manage muted contacts", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Icon(Icons.Default.ChevronRight, null)
+                }
+            }
+        }
+        item {
+            ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+                Column(Modifier.fillMaxWidth().padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Palette, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Appearance", fontWeight = FontWeight.Bold)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(
+                            selected = ThemePreferences.mode == ThemeMode.SYSTEM,
+                            onClick = { ThemePreferences.setMode(context.applicationContext, ThemeMode.SYSTEM) },
+                            label = { Text("System") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = ThemePreferences.mode == ThemeMode.LIGHT,
+                            onClick = { ThemePreferences.setMode(context.applicationContext, ThemeMode.LIGHT) },
+                            label = { Text("Light") },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            selected = ThemePreferences.mode == ThemeMode.DARK,
+                            onClick = { ThemePreferences.setMode(context.applicationContext, ThemeMode.DARK) },
+                            label = { Text("Dark") },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        }
+        item {
+            ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+                Column(Modifier.fillMaxWidth().padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Notifications, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Notifications", fontWeight = FontWeight.Bold)
+                            Text("Incoming calls and messages need Android notifications enabled.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                                putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                            }
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Open notification settings") }
+                }
+            }
+        }
+        item {
+            ElevatedCard(shape = RoundedCornerShape(22.dp)) {
+                Column(Modifier.fillMaxWidth().padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.BuildCircle, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Call status repair", fontWeight = FontWeight.Bold)
+                            Text("Clears a stale Busy / On another call state when no real call is alive.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            scope.launch {
+                                runCatching { repository.repairMyCallState() }
+                                    .onSuccess { onMessage("Call status checked and repaired") }
+                                    .onFailure { onMessage(it.message ?: "Could not repair call status") }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("Repair call status") }
+                }
+            }
+        }
+        item {
+            Text(
+                "GlobalCall ${BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        item {
+            OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        runCatching { repository.setOnline(false) }
+                        auth.signOut()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Icon(Icons.Default.Logout, null)
                 Spacer(Modifier.width(8.dp))
