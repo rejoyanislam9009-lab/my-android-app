@@ -72,6 +72,9 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
             "call_waiting" -> {
                 val callId = data["callId"].orEmpty()
                 if (callId.isBlank()) return
+                val callerUid = data["callerUid"].orEmpty()
+                val calleeUid = data["calleeUid"].orEmpty()
+                if (calleeUid.isNotBlank() && isMutedOnDevice(calleeUid, callerUid)) return
                 showCallWaiting(
                     callId = callId,
                     callerName = data["callerName"].orEmpty().ifBlank { "GlobalCall user" },
@@ -80,7 +83,11 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
             }
             "chat_message" -> {
                 val senderUid = data["senderUid"].orEmpty()
+                val receiverUid = data["receiverUid"].orEmpty()
                 if (senderUid.isBlank()) return
+                if (receiverUid.isNotBlank() && isMutedOnDevice(receiverUid, senderUid)) return
+                val authUid = runCatching { FirebaseAuth.getInstance(app).currentUser?.uid }.getOrNull()
+                if (authUid != null && receiverUid.isNotBlank() && authUid != receiverUid) return
                 showChatMessage(
                     senderUid = senderUid,
                     senderName = data["senderName"].orEmpty().ifBlank { "GlobalCall contact" },
@@ -88,6 +95,15 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
                 )
             }
         }
+    }
+
+    private fun isMutedOnDevice(ownerUid: String, peerUid: String): Boolean {
+        if (ownerUid.isBlank() || peerUid.isBlank()) return false
+        val prefs = applicationContext.getSharedPreferences(
+            "globalcall_contact_notifications_$ownerUid",
+            Context.MODE_PRIVATE
+        )
+        return peerUid in prefs.getStringSet("muted_contact_uids", emptySet()).orEmpty()
     }
 
     private suspend fun handleIncomingCall(
@@ -126,24 +142,48 @@ class GlobalCallMessagingService : FirebaseMessagingService() {
         }
 
         // FirebaseAuth can take a moment to restore its cached user when FCM wakes a
-        // killed/background process. Do not silently drop a valid call during that gap.
+        // cold/background process. The trusted backend already validates block state.
+        // Do not drop a valid call merely because the local auth cache is still loading.
         if (currentUid == null) {
             showIncomingCall(callId, callerName, callerUid, video)
             return
         }
 
         val db = FirebaseFirestore.getInstance(app)
+        val repository = GlobalCallRepository(auth = auth, db = db)
+        if (callerUid.isNotBlank() && runCatching { repository.isBlockedByMe(callerUid) }.getOrDefault(false)) {
+            runCatching {
+                val callRef = db.collection("calls").document(callId)
+                val call = callRef.get().await()
+                if (call.getString("status") == "ringing") {
+                    callRef.update(
+                        mapOf(
+                            "status" to "declined",
+                            "endedAt" to FieldValue.serverTimestamp(),
+                            "updatedAt" to FieldValue.serverTimestamp()
+                        )
+                    ).await()
+                }
+            }
+            return
+        }
+
+        runCatching { repository.repairMyCallState() }
         val userRef = db.collection("users").document(currentUid)
         val profile = runCatching { userRef.get().await() }.getOrNull()
         val state = profile?.getString("callState").orEmpty()
         val currentCallId = profile?.getString("currentCallId").orEmpty()
         val stateAt = profile?.getTimestamp("callStateUpdatedAt")?.seconds ?: 0L
         val age = ((System.currentTimeMillis() / 1000L) - stateAt).coerceAtLeast(0L)
-        val serverBusy = currentCallId.isNotBlank() && currentCallId != callId && when (state) {
-            "active" -> age < 120L
-            "calling", "ringing" -> age < 90L
+        val freshByHeartbeat = currentCallId.isNotBlank() && currentCallId != callId && when (state) {
+            "active" -> age < 70L
+            "calling", "ringing" -> age < 75L
             else -> false
         }
+        val serverBusy = if (freshByHeartbeat) {
+            val existingCall = runCatching { db.collection("calls").document(currentCallId).get().await() }.getOrNull()
+            existingCall?.exists() == true && existingCall.getString("status") in setOf("ringing", "accepted")
+        } else false
 
         if (serverBusy) {
             showCallWaiting(callId, callerName, video)
