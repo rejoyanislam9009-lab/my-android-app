@@ -477,5 +477,5 @@ private fun CloudUnavailableScreen(
             Spacer(Modifier.height(8.dp))
             OutlinedButton(onClick = onBack) { Text("Use without account") }
         }
-    )
+    }
 }
