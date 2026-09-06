@@ -134,25 +134,9 @@ class UserDiscoveryRepository(
         if (!directory.exists()) return null
         val uid = directory.getString("uid").orEmpty()
         if (uid.isBlank() || uid == auth.currentUser?.uid) return null
-        val profile = db.collection("users").document(uid).get().await()
-        if (!profile.exists()) return null
-        return DiscoveredUser(
-            user = AppUser(
-                uid = uid,
-                displayName = profile.getString("displayName").orEmpty(),
-                email = profile.getString("email").orEmpty(),
-                bio = profile.getString("bio").orEmpty(),
-                photoUrl = profile.getString("photoUrl").orEmpty(),
-                photoData = profile.getString("photoData").orEmpty(),
-                phoneLast4 = profile.getString("phoneLast4").orEmpty(),
-                callCode = profile.getString("callCode").orEmpty(),
-                online = profile.getBoolean("online") ?: false,
-                lastSeen = profile.getTimestamp("lastSeen"),
-                callState = profile.getString("callState").orEmpty().ifBlank { "idle" },
-                currentCallId = profile.getString("currentCallId").orEmpty()
-            ),
-            username = username
-        )
+        val core = GlobalCallRepository(auth = auth, db = db)
+        val user = core.loadUser(uid) ?: return null
+        return DiscoveredUser(user = user, username = username)
     }
 
     suspend fun findUser(raw: String): DiscoveredUser? {
