@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -232,7 +233,10 @@ private fun CloudAccountHost(
             FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
                 scope.launch { runCatching { runtime.repository.saveFcmToken(token) } }
             }
-            scope.launch { runCatching { runtime.repository.setOnline(true) } }
+            scope.launch {
+                runCatching { runtime.repository.repairMyCallState() }
+                runCatching { runtime.repository.setOnline(true) }
+            }
 
             if (
                 Build.VERSION.SDK_INT >= 33 &&
@@ -371,6 +375,18 @@ private fun AccountAppearanceDialog(
                     )
                 }
 
+                OutlinedButton(
+                    onClick = {
+                        onDismiss()
+                        context.startActivity(Intent(context, PrivacySettingsActivity::class.java))
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Security, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Privacy & blocked users")
+                }
+
                 HorizontalDivider()
 
                 Text("Email my account details", fontWeight = FontWeight.Bold)
@@ -461,5 +477,5 @@ private fun CloudUnavailableScreen(
             Spacer(Modifier.height(8.dp))
             OutlinedButton(onClick = onBack) { Text("Use without account") }
         }
-    }
+    )
 }
