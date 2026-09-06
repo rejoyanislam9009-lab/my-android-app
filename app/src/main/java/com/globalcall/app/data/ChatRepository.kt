@@ -128,6 +128,9 @@ class ChatRepository(
         require(clean.isNotBlank()) { "Write a message first" }
         require(clean.length <= 2000) { "Message is too long" }
 
+        val blockedByMe = db.collection("blocks").document("${uid}_$peerUid").get().await().exists()
+        require(!blockedByMe) { "Unblock this contact before messaging" }
+
         val id = conversationId(uid, peerUid)
         val connection = db.collection("connections").document(id).get().await()
         require(connection.exists()) { "Connect with this user before messaging" }
@@ -201,6 +204,12 @@ class ChatRepository(
         val id = conversationId(uid, peerUid)
         val connection = db.collection("connections").document(id).get().await()
         if (!connection.exists()) return
+        if (typing) {
+            val blockedByMe = runCatching {
+                db.collection("blocks").document("${uid}_$peerUid").get().await().exists()
+            }.getOrDefault(false)
+            if (blockedByMe) return
+        }
         db.collection("conversations").document(id).set(
             mapOf(
                 "participantUids" to listOf(uid, peerUid).sorted(),
