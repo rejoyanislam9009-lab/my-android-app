@@ -128,9 +128,6 @@ class ChatRepository(
         require(clean.isNotBlank()) { "Write a message first" }
         require(clean.length <= 2000) { "Message is too long" }
 
-        val blockedByMe = db.collection("blocks").document("${uid}_$peerUid").get().await().exists()
-        require(!blockedByMe) { "Unblock this contact before messaging" }
-
         val id = conversationId(uid, peerUid)
         val connection = db.collection("connections").document(id).get().await()
         require(connection.exists()) { "Connect with this user before messaging" }
@@ -139,16 +136,14 @@ class ChatRepository(
         val conversation = db.collection("conversations").document(id)
         val message = conversation.collection("messages").document()
 
-        // Keep the security-critical message write separate from optional UI metadata.
-        // Older deployed rules may reject typing/unread metadata even though the message
-        // itself is allowed. A metadata rejection must not roll back a valid message.
-        val conversationSnapshot = conversation.get().await()
-        if (!conversationSnapshot.exists()) {
-            conversation.set(
-                mapOf("participantUids" to participants),
-                SetOptions.merge()
-            ).await()
-        }
+        // Do not pre-read an optional /blocks document or a possibly missing
+        // conversation document. Missing-document reads can be denied by rules even
+        // though creating the valid conversation/message is permitted. The Firestore
+        // rules remain authoritative for block enforcement in either direction.
+        conversation.set(
+            mapOf("participantUids" to participants),
+            SetOptions.merge()
+        ).await()
 
         message.set(
             mapOf(
@@ -214,12 +209,6 @@ class ChatRepository(
         val id = conversationId(uid, peerUid)
         val connection = db.collection("connections").document(id).get().await()
         if (!connection.exists()) return
-        if (typing) {
-            val blockedByMe = runCatching {
-                db.collection("blocks").document("${uid}_$peerUid").get().await().exists()
-            }.getOrDefault(false)
-            if (blockedByMe) return
-        }
         db.collection("conversations").document(id).set(
             mapOf(
                 "participantUids" to listOf(uid, peerUid).sorted(),
