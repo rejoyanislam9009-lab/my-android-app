@@ -175,7 +175,12 @@ fun ReadyHomeScreen(
         allUsers.filter { it.uid in connectionUids }
             .sortedWith(compareByDescending<AppUser> { it.online }.thenBy { it.displayName.lowercase() })
     }
-    val unreadChats = remember(conversations, user.uid) { conversations.count { it.isUnread(user.uid) } }
+    val visibleConversations = remember(conversations, connectionUids, user.uid) {
+        conversations.filter { it.peerUid(user.uid) in connectionUids }
+    }
+    val unreadChats = remember(visibleConversations, user.uid) {
+        visibleConversations.count { it.isUnread(user.uid) }
+    }
 
     fun openChat(peer: AppUser) {
         context.startActivity(
@@ -187,6 +192,7 @@ fun ReadyHomeScreen(
     }
 
     LaunchedEffect(user.uid) {
+        runCatching { repository.repairMyCallState() }
         runCatching { repository.ensureMyCallCode() }
             .onSuccess { myCallCode = it }
             .onFailure { message = it.message ?: "Could not activate your GlobalCall ID" }
@@ -282,7 +288,6 @@ fun ReadyHomeScreen(
                 .onSuccess(onJoinCall)
                 .onFailure {
                     message = when {
-                        it.message?.contains("offline", ignoreCase = true) == true -> "This contact is offline right now"
                         it.message?.contains("another call", ignoreCase = true) == true -> it.message
                         it.message?.contains("permission", ignoreCase = true) == true -> "Call access is syncing. Please try again in a moment."
                         else -> it.message ?: "Could not start call"
@@ -320,7 +325,7 @@ fun ReadyHomeScreen(
                         onMessage = ::openChat
                     )
                     1 -> ChatsTab(
-                        conversations = conversations,
+                        conversations = visibleConversations,
                         people = people,
                         currentUid = user.uid,
                         onMessage = ::openChat
@@ -517,7 +522,7 @@ private fun CallsTab(
                     },
                     photoData = peer?.photoData.orEmpty(),
                     online = peer?.online == true,
-                    enabled = peer?.online == true && !busy && !onAnotherCall,
+                    enabled = peer != null && !busy && !onAnotherCall,
                     onMessage = peer?.let { { onMessage(it) } },
                     onVoice = { peer?.let { onDirectCall(it, false) } },
                     onVideo = { peer?.let { onDirectCall(it, true) } }
@@ -752,11 +757,11 @@ private fun PeopleTab(
                                     Text("Message")
                                 }
                                 FilledIconButton(
-                                    enabled = person.online && !busy && !onAnotherCall,
+                                    enabled = !busy && !onAnotherCall,
                                     onClick = { onDirectCall(person, false) }
                                 ) { Icon(Icons.Default.Call, "Voice call") }
                                 FilledIconButton(
-                                    enabled = person.online && !busy && !onAnotherCall,
+                                    enabled = !busy && !onAnotherCall,
                                     onClick = { onDirectCall(person, true) }
                                 ) { Icon(Icons.Default.Videocam, "Video call") }
                             }
@@ -813,7 +818,7 @@ private fun PeopleTab(
                     },
                     photoData = person.photoData,
                     online = person.online,
-                    enabled = person.online && !busy && !onAnotherCall,
+                    enabled = !busy && !onAnotherCall,
                     onMessage = { onMessage(person) },
                     onVoice = { onDirectCall(person, false) },
                     onVideo = { onDirectCall(person, true) }
