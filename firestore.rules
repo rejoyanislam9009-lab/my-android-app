@@ -19,6 +19,14 @@ service cloud.firestore {
         && request.auth.uid in get(/databases/$(database)/documents/connections/$(connectionId)).data.participantUids;
     }
 
+    function isBlocked(blockerUid, blockedUid) {
+      return exists(/databases/$(database)/documents/blocks/$(blockerUid + "_" + blockedUid));
+    }
+
+    function isBlockedBetween(firstUid, secondUid) {
+      return isBlocked(firstUid, secondUid) || isBlocked(secondUid, firstUid);
+    }
+
     match /users/{uid} {
       allow read: if signedIn();
       allow create, update, delete: if signedIn() && request.auth.uid == uid;
@@ -52,7 +60,11 @@ service cloud.firestore {
         && request.resource.data.participantUids is list
         && request.resource.data.participantUids.size() == 2
         && request.auth.uid in request.resource.data.participantUids
-        && request.resource.data.participantUids[0] != request.resource.data.participantUids[1];
+        && request.resource.data.participantUids[0] != request.resource.data.participantUids[1]
+        && !isBlockedBetween(
+          request.resource.data.participantUids[0],
+          request.resource.data.participantUids[1]
+        );
       allow update: if isParticipant(resource.data)
         && request.resource.data.participantUids == resource.data.participantUids
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['updatedAt']);
@@ -73,6 +85,7 @@ service cloud.firestore {
           && request.resource.data.receiverUid is string
           && request.resource.data.receiverUid != request.auth.uid
           && request.resource.data.receiverUid in get(/databases/$(database)/documents/connections/$(connectionId)).data.participantUids
+          && !isBlockedBetween(request.auth.uid, request.resource.data.receiverUid)
           && request.resource.data.text is string
           && request.resource.data.text.size() > 0
           && request.resource.data.text.size() <= 2000;
@@ -110,7 +123,8 @@ service cloud.firestore {
         && request.resource.data.calleeUid != request.auth.uid
         && request.resource.data.participantUids == [request.auth.uid, request.resource.data.calleeUid]
         && request.resource.data.status == 'ringing'
-        && request.resource.data.roomName is string;
+        && request.resource.data.roomName is string
+        && !isBlockedBetween(request.auth.uid, request.resource.data.calleeUid);
 
       allow read: if isParticipant(resource.data);
 
@@ -148,7 +162,8 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.blockerUid == request.auth.uid
         && request.resource.data.blockedUid is string
-        && request.resource.data.blockedUid != request.auth.uid;
+        && request.resource.data.blockedUid != request.auth.uid
+        && blockId == request.auth.uid + "_" + request.resource.data.blockedUid;
       allow read, delete: if signedIn() && resource.data.blockerUid == request.auth.uid;
       allow update: if false;
     }
