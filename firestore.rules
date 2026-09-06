@@ -19,6 +19,11 @@ service cloud.firestore {
         && request.auth.uid in get(/databases/$(database)/documents/connections/$(connectionId)).data.participantUids;
     }
 
+    function isConversationParticipant(connectionId) {
+      return signedIn()
+        && request.auth.uid in get(/databases/$(database)/documents/conversations/$(connectionId)).data.participantUids;
+    }
+
     function isBlocked(blockerUid, blockedUid) {
       return exists(/databases/$(database)/documents/blocks/$(blockerUid + "_" + blockedUid));
     }
@@ -72,14 +77,14 @@ service cloud.firestore {
     }
 
     match /conversations/{connectionId} {
-      allow read: if isConnectionParticipant(connectionId);
+      allow read: if isParticipant(resource.data);
       allow create, update: if isConnectionParticipant(connectionId)
         && request.resource.data.participantUids
           == get(/databases/$(database)/documents/connections/$(connectionId)).data.participantUids;
       allow delete: if false;
 
       match /messages/{messageId} {
-        allow read: if isConnectionParticipant(connectionId);
+        allow read: if isConversationParticipant(connectionId);
         allow create: if isConnectionParticipant(connectionId)
           && request.resource.data.senderUid == request.auth.uid
           && request.resource.data.receiverUid is string
@@ -89,7 +94,7 @@ service cloud.firestore {
           && request.resource.data.text is string
           && request.resource.data.text.size() > 0
           && request.resource.data.text.size() <= 2000;
-        allow update: if isConnectionParticipant(connectionId)
+        allow update: if isConversationParticipant(connectionId)
           && resource.data.receiverUid == request.auth.uid
           && request.resource.data.senderUid == resource.data.senderUid
           && request.resource.data.receiverUid == resource.data.receiverUid
